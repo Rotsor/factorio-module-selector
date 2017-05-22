@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# ghc -O2 factorio-module-selector -threaded -rtsopts && time ./factorio-module-selector +RTS -N
+ghc -O2 factorio-module-selector -rtsopts && time ./factorio-module-selector

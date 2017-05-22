@@ -20,6 +20,10 @@ import Control.Monad
 import System.IO(stdout, hSetBuffering, BufferMode(..))
 import Control.Parallel.Strategies
 import GHC.Generics
+import qualified Data.Eigen.Matrix
+import Foreign.C.Types
+import qualified Numeric.LinearAlgebra.HMatrix
+import qualified Numeric.LinearAlgebra.Data
 
 data RawMaterial =
   BuriedIron
@@ -402,15 +406,57 @@ of_data_matrix m =
           | (i, r) <- zip all_as (Data.Matrix.toLists m)
           , (j, v) <- zip all_as r])
 
-matrix_inverse :: (Ix' a, Num v, Fractional v, Eq v) => Matrix a a v -> Matrix a a v
-matrix_inverse x = trace "inverting" $ of_data_matrix . (\(Right res) -> res) . Data.Matrix.inverse . to_data_matrix $ x
+matrix_inverse_precise :: (Ix' a, Num v, Fractional v, Eq v) => Matrix a a v -> Matrix a a v
+matrix_inverse_precise x = trace "inverting" $ of_data_matrix . (\(Right res) -> res) . Data.Matrix.inverse . to_data_matrix $ x
 
---matrix_inverse_approx :: (Ix' a, Num v, Fractional v, Eq v) => Matrix a a Rational -> Matrix a a Rational
---matrix_inverse_approx x = trace "inverting" $ of_data_matrix . (\(Right res) -> res) . Data.Eigen.Matrix.inverse . to_data_matrix $ x
+
+to_hmatrix :: forall a . (Ix' a) => Matrix a a Rational -> Numeric.LinearAlgebra.HMatrix.Matrix Double
+to_hmatrix (Matrix m) =
+  Numeric.LinearAlgebra.Data.fromLists
+   $ [
+     [ fromRational (m ! (i, j))
+       | j <- range fullRange
+     ]
+     | i <- range fullRange
+     ]
+
+of_hmatrix :: forall a . Ix' a => Numeric.LinearAlgebra.HMatrix.Matrix Double -> Matrix a a Rational
+of_hmatrix m =
+  let (all_as :: [a]) = range fullRange in
+  Matrix (Array.array fullRange
+          [ ((i, j), toRational v)
+          | (i, r) <- zip all_as (Numeric.LinearAlgebra.Data.toLists m)
+          , (j, v) <- zip all_as r])
+
+matrix_inverse_hmatrix :: (Ix' a) => Matrix a a Rational -> Matrix a a Rational
+matrix_inverse_hmatrix x = of_hmatrix . Numeric.LinearAlgebra.HMatrix.inv . to_hmatrix $ x
+
+to_eigen_matrix :: forall a . (Ix' a) => Matrix a a Rational -> Data.Eigen.Matrix.Matrix Double CDouble
+to_eigen_matrix (Matrix m) =
+  Data.Eigen.Matrix.fromList
+   [
+     [ fromRational (m ! (toEnum (i - 1), toEnum (j - 1)))
+       | j <- range fullRange
+     ]
+     | i <- range fullRange
+     ]
+
+of_eigen_matrix :: forall a . Ix' a => Data.Eigen.Matrix.Matrix Double CDouble -> Matrix a a Rational
+of_eigen_matrix m =
+  let (all_as :: [a]) = range fullRange in
+  Matrix (Array.array fullRange
+          [ ((i, j), toRational v)
+          | (i, r) <- zip all_as (Data.Eigen.Matrix.toList m)
+          , (j, v) <- zip all_as r])
+
+matrix_inverse_eigen :: (Ix' a) => Matrix a a Rational -> Matrix a a Rational
+matrix_inverse_eigen x = of_eigen_matrix . Data.Eigen.Matrix.inverse . to_eigen_matrix $ x
+
+matrix_inverse = matrix_inverse_precise
 
 -- x = m * x + x_0
-solve_equation :: (Ix' a, Num v, Fractional v, Eq v) => Matrix a a v -> Vector a v -> Vector a v
-solve_equation a x0 = matrix_inverse (matrix_subtract a matrix_identity) `matrix_mult` matrix_negate x0
+-- solve_equation :: (Ix' a, Num v, Fractional v, Eq v) => Matrix a a v -> Vector a v -> Vector a v
+-- solve_equation a x0 = matrix_inverse (matrix_subtract a matrix_identity) `matrix_mult` matrix_negate x0
 
 solvedRecipes
   :: (IntermediateProduct -> Config)
@@ -423,13 +469,13 @@ solvedRecipes configs =
 vector_lookup :: Ix' a => Vector a v -> a -> v
 vector_lookup (Matrix x) a = x ! (a, ())
 
-compute' :: (IntermediateProduct -> Config) -> IntermediateProduct -> RawMaterialPressure
-compute' configs =
+compute'_new :: (IntermediateProduct -> Config) -> IntermediateProduct -> RawMaterialPressure
+compute'_new configs =
   let recipes = (solvedRecipes configs) in
    \product -> fmap (\v -> vector_lookup v product) recipes
 
-compute'_old :: (IntermediateProduct -> Config) -> IntermediateProduct -> RawMaterialPressure
-compute'_old configs product = case recipe product of
+compute' :: (IntermediateProduct -> Config) -> IntermediateProduct -> RawMaterialPressure
+compute' configs product = case recipe product of
   (components, kind, Time time) ->
     let energy = (time / (speedMultiplier config * baseSpeed kind)) * unPower (basePower kind) * energyMultiplier config in
      scale (recip $ productivityMultiplier config) $
@@ -551,7 +597,7 @@ ff x = Dub x
 possibleSavings'' =
   [
     (ff $ divv saving cost * 3600, (ff $ saving, ff $ cost, product, modules))
-  | product <- take 1 $ range fullRange
+  | product <- range fullRange
   , (saving, cost, details, modules) <- possibleSavings' product
   , cost /= 0
   ]
@@ -559,10 +605,6 @@ possibleSavings'' =
 possibleSavings''' =
   reverse . take 50 . dropWhile (\(_, (gain, cost, _, _)) -> gain < Dub 0 && cost < Dub 0) . reverse . sortBy (comparing fst) $ possibleSavings''  
 
--- main = mapM_ print $ possibleSavings'''
+main = mapM_ print $ possibleSavings'''
 
-main = do
-  let x = IronPlate
-  print $ compute' currentConfig x
-  print $ compute'_old currentConfig x
-  print $ compute'_old currentConfig x == compute' currentConfig x
+-- main = print $ computeTotalCost IronPlate
