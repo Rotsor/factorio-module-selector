@@ -726,7 +726,7 @@ ff x = Dub x
 possibleSavings'' =
   [
     (ff $ divv saving cost * 3600, (ff $ saving, ff $ cost, product, modules))
-  | product <- range fullRange
+  | product <- take 5 $ range fullRange
   , (saving, cost, details, modules) <- possibleSavings' product
   , cost /= 0
   ]
