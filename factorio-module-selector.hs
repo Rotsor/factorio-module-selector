@@ -1,3 +1,4 @@
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE ConstraintKinds #-}
@@ -6,6 +7,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 import qualified Data.Map as Map
+import Data.Map(Map)
 import qualified Data.Set as Set
 import Control.Arrow(first, second)
 import Data.List
@@ -43,7 +45,7 @@ allOfThem = [minBound..maxBound]
 vector_of_function f = Matrix (f_array (\(x, ()) -> f x))
 
 matrixZipWith f (Matrix a) (Matrix b) =
-  Matrix (f_array (\k -> a ! k + b ! k))
+  Matrix (f_array (\k -> f (a ! k) (b ! k)))
 
 negateRawMaterialPressure x = fmap negate x
 addRawMaterialPressure f g = matrixZipWith (+) f g
@@ -452,7 +454,11 @@ of_eigen_matrix m =
 matrix_inverse_eigen :: (Ix' a) => Matrix a a Rational -> Matrix a a Rational
 matrix_inverse_eigen x = of_eigen_matrix . Data.Eigen.Matrix.inverse . to_eigen_matrix $ x
 
-matrix_inverse = matrix_inverse_precise
+matrix_inverse_verified inverse x =
+  let y = inverse x in
+    if (matrix_mult x y == Matrix (f_array (\(x, y) -> if x == y then 1 else 0))) then y else error $ "matrix inverse broken: " ++ "\n" ++ show x ++"\n" ++ show y
+
+matrix_inverse x = matrix_inverse_verified matrix_inverse_own x
 
 -- x = m * x + x_0
 -- solve_equation :: (Ix' a, Num v, Fractional v, Eq v) => Matrix a a v -> Vector a v -> Vector a v
@@ -474,8 +480,8 @@ compute'_new configs =
   let recipes = (solvedRecipes configs) in
    \product -> fmap (\v -> vector_lookup v product) recipes
 
-compute' :: (IntermediateProduct -> Config) -> IntermediateProduct -> RawMaterialPressure
-compute' configs product = case recipe product of
+compute'_old :: (IntermediateProduct -> Config) -> IntermediateProduct -> RawMaterialPressure
+compute'_old configs product = case recipe product of
   (components, kind, Time time) ->
     let energy = (time / (speedMultiplier config * baseSpeed kind)) * unPower (basePower kind) * energyMultiplier config in
      scale (recip $ productivityMultiplier config) $
@@ -491,8 +497,131 @@ compute' configs product = case recipe product of
     where
       config = configs product
 
+compute' f =
+  let co = compute'_old f in
+  let cn = compute'_new f in
+  \info x ->
+    let v1 = co x in
+    let v2 = cn x in
+    if v1 == v2 then v1 else error $ "disagreement!\n" ++ show info ++ "\n" ++ show x
+
+data SparseMatrix a b v = SparseMatrix [(a, Map b v)]
+
+class Linear a where
+  zero :: a
+  add :: a -> a -> a
+  minus :: a -> a
+
+data MatrixError =
+  Not_enough_equations
+  | Contradicting_equations
+  deriving Show
+
+instance Linear Rational where
+  zero = 0
+  add = (+)
+  minus x = -x
+
+instance (Linear v, Ix' a, Ix' b) => Linear (Matrix a b v) where
+  zero = Matrix (f_array (\(a, b) -> zero))
+  add = matrixZipWith add
+  minus = fmap minus
+
+matrix_inverse_own ::
+  forall a b v .
+  (Ix' a, Ix' b, Num v, Fractional v, Eq v, Linear v) => Matrix a b v -> Matrix b a v
+matrix_inverse_own = lastStep . better . almostDone where
+  -- specialize v2 and v3 to [Vector a v]
+  -- v1 becomes [v]
+  specialized_solve_equation ::
+      (v -> v -> v)
+      -> (v -> v -> v)
+      -> (v -> Vector a v -> Vector a v)
+      -> (v -> Vector a v -> Vector a v)
+      -> (Vector a v -> v -> Vector a v)
+      -> [(Map b v, Vector a v)] -> Either MatrixError (Map b (Vector a v))
+  specialized_solve_equation = solve_equation
+
+  better :: [(Map b v, Vector a v)] -> Either MatrixError (Map b (Vector a v))
+  better = specialized_solve_equation (/) (*) (\x -> fmap (*x)) (\x -> fmap (*x)) (\v x -> fmap (/x) v)
+
+  almostDone :: Matrix a b v -> [(Map b v, Vector a v)]
+  almostDone (Matrix m) =
+    [ (Map.fromList
+      [
+        (b, x)
+        | b <- range fullRange
+        , let x = m ! (a,b)
+        , x /= 0
+      ], Matrix (f_array (\(a', ()) -> if a == a' then 1 else 0)))
+      | a <- range fullRange
+    ]
+
+  lastStep :: Either MatrixError (Map b (Vector a v)) -> Matrix b a v
+  lastStep (Left e) = error $ show e
+  lastStep (Right m) =
+    Matrix (f_array (\(b, a) -> case Map.lookup b m of
+                        Nothing -> 0
+                        Just (Matrix v) ->
+                          v ! (a, ())
+                       ))
+
+-- in the input missing elements assumed to be 0;
+-- in the output missing elements are undefined (can be whatever)
+solve_equation ::
+  forall v1 v2 v3 b s.
+  ( Linear v1
+  , Linear v2
+  , Linear v3
+  , Eq b
+  , Eq v2
+  , Eq v1
+  , Ord b)
+  =>
+  (v1 -> v1 -> s)
+  -> (s -> v1 -> v1)
+  -> (s -> v2 -> v2)
+  -> (v1 -> v3 -> v2)
+  -> (v2 -> v1 -> v3)
+  -> [(Map b v1, v2)] -> Either MatrixError (Map b v3)
+solve_equation divide mult_v1 mult_v2 mult' divide' rows = go rows where
+
+  lookupLhs :: (Map b v1, v2) -> b -> v1
+  lookupLhs (lhs, _) b = case Map.lookup b lhs of
+    Nothing -> zero
+    Just x -> x
+
+  addRow (a1, b1) (a2, b2) = (Map.unionWith add a1 a2, add b1 b2)
+
+  scaleRow (s :: s) (a1, b1) = (fmap (mult_v1 s) a1, mult_v2 s b1)
+
+  minusRow (m, v) = (fmap minus m, minus v)
+  
+  remove_b :: (b, (Map b v1, v2)) -> (Map b v1, v2) -> (Map b v1, v2)
+  remove_b (b, row0) row1 =
+    first (\m -> if m Map.! b == zero then Map.delete b m else error "should be zero") $ addRow row1 (minusRow $ scaleRow (lookupLhs row1 b `divide` lookupLhs row0 b) row0)
+  
+  go :: [(Map b v1, v2)] -> Either MatrixError (Map b v3)
+  go [] = Right Map.empty
+  go ((row0@(lhs, rhs)) : rest) = case [(b, v) | (b, v) <- Map.toList lhs, v /= zero] of
+    [] -> -- all coefficients are 0
+      if rhs == zero
+      then
+        go rest
+      else
+        Left Contradicting_equations
+    (chosen_b, chosen_v) : _ ->
+      case go (map (remove_b (chosen_b, row0)) rest) of
+        Left error -> Left error
+        Right assignments ->
+          case traverse (\(b, v) -> if b == chosen_b then Just zero else fmap (mult' v) (Map.lookup b assignments)) (Map.toList lhs) of
+            Nothing -> Left Not_enough_equations
+            Just lhs ->
+              let sum_of_lhs = foldr add zero lhs in
+              Right (Map.insert chosen_b (divide' (add rhs (minus sum_of_lhs)) chosen_v) assignments)
+
 computeTotalCost :: IntermediateProduct -> RawMaterialPressure
-computeTotalCost = compute' currentConfig
+computeTotalCost = compute' currentConfig "normal"
 
 usability GearWheel = Unusable
 usability IronPlate = Unusable
@@ -554,8 +683,8 @@ possibleSavings product =
   let (_, kind, Time time) = recipe product in
     [ let saving_per_unit =
             addRawMaterialPressure
-            (compute' currentConfig product)
-            (fmap negate $ compute' (\p -> if p == product then config else currentConfig product) product)
+            (compute' currentConfig "normal" product)
+            (fmap negate $ compute' (\p -> if p == product then config else currentConfig p) (show (product, config)) product)
       in
         let saving_per_second =
               scale (recip $ time / speedMultiplier config) saving_per_unit
@@ -605,6 +734,26 @@ possibleSavings'' =
 possibleSavings''' =
   reverse . take 50 . dropWhile (\(_, (gain, cost, _, _)) -> gain < Dub 0 && cost < Dub 0) . reverse . sortBy (comparing fst) $ possibleSavings''  
 
-main = mapM_ print $ possibleSavings'''
+matrix_of_lists lists =
+  Matrix (Array.array fullRange
+          [ ((i, j), toRational v)
+          | (i, r) <- zip (range fullRange) lists
+          , (j, v) <- zip (range fullRange) r])
 
--- main = print $ computeTotalCost IronPlate
+identity_matrix :: (Ix' a) => Matrix a a Rational
+identity_matrix = Matrix (f_array (\(a,b) -> if a == b then 1 else 0))
+
+main = mapM_ print $ possibleSavings'''
+{-
+main = do
+ flip mapM_ (range fullRange :: [IntermediateProduct]) $ \product -> do
+  let configs =
+        (\p -> if p == GearWheel
+          then Config {configSpeedBonus = 0, configProductivityBonus = 0, configEnergyBonus = 0}
+          else currentConfig p)
+  let x = compute' configs "qq" GearWheel
+  let y = compute' configs "xx" GearWheel
+  print $ x
+  print $ y
+  print $ x == y
+-}
