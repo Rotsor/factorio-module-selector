@@ -6,6 +6,7 @@
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+
 import qualified Data.Map as Map
 import Data.Map(Map)
 import qualified Data.Set as Set
@@ -27,6 +28,8 @@ import Foreign.C.Types
 import qualified Numeric.LinearAlgebra.HMatrix
 import qualified Numeric.LinearAlgebra.Data
 
+import Matrix
+
 data RawMaterial =
   BuriedIron
   | BuriedCopper
@@ -41,11 +44,6 @@ instance NFData RawMaterial
 type RawMaterialPressure = Vector RawMaterial Rational
 
 allOfThem = [minBound..maxBound]
-
-vector_of_function f = Matrix (f_array (\(x, ()) -> f x))
-
-matrixZipWith f (Matrix a) (Matrix b) =
-  Matrix (f_array (\k -> f (a ! k) (b ! k)))
 
 negateRawMaterialPressure x = fmap negate x
 addRawMaterialPressure f g = matrixZipWith (+) f g
@@ -279,21 +277,6 @@ scaleTime s (Time t) = Time (s * t)
 
 coalToEnergy coal = coal * 8e6 / 2
 
-data Matrix a b v = Matrix (Array (a, b) v) deriving (Show, Eq, Ord, Functor, Generic)
-instance (NFData a, NFData b, NFData v) => NFData (Matrix a b v)
-type Vector a v = Matrix a () v
-
-fullRange :: Bounded a => (a, a)
-fullRange = (minBound, maxBound)
-
-type Ix' a = (Ix a, Bounded a, Enum a)
-
-matrix_mult :: (Ix' a, Ix' b, Ix' c, Num v) => Matrix a b v -> Matrix b c v -> Matrix a c v
-matrix_mult (Matrix x) (Matrix y) = Matrix (Array.array fullRange [ ((a, c), sum [ x ! (a, b) * y ! (b, c) | b <- range fullRange]) | a <- range fullRange, c <- range fullRange])
-
-matrix_mult' :: (Ix' a, Ix' b, Num v) => Matrix a b v -> Vector b v -> Vector a v
-matrix_mult' = matrix_mult
-
 recipe :: IntermediateProduct -> ([(Product, Rational)], FactoryKind, Time)
 recipe =
   let many n (rs, kind, time) = (map (second (/n)) rs, kind, scaleTime (recip n) time) in
@@ -365,9 +348,6 @@ recipesToMatrix configs =
        map (second (* (recip $ productivityMultiplier config)))
          (components ++ [(Intermediate Energy, energy)])
   )
-
-f_array :: Ix' k => (k -> v) -> Array k v
-f_array f = Array.array fullRange [(k, f k) | k <- range fullRange]
 
 instance (Ix' a, Ix' b) => Enum (a, b) where
   fromEnum (x, (y :: b)) = fromEnum x * Array.rangeSize (fullRange :: (b, b)) + fromEnum y
@@ -726,7 +706,7 @@ ff x = Dub x
 possibleSavings'' =
   [
     (ff $ divv saving cost * 3600, (ff $ saving, ff $ cost, product, modules))
-  | product <- take 5 $ range fullRange
+  | product <- take 2 $ range fullRange
   , (saving, cost, details, modules) <- possibleSavings' product
   , cost /= 0
   ]
@@ -743,7 +723,8 @@ matrix_of_lists lists =
 identity_matrix :: (Ix' a) => Matrix a a Rational
 identity_matrix = Matrix (f_array (\(a,b) -> if a == b then 1 else 0))
 
-main = mapM_ print $ possibleSavings'''
+main = print $ length possibleSavings'''
+-- main = mapM_ print $ possibleSavings'''
 {-
 main = do
  flip mapM_ (range fullRange :: [IntermediateProduct]) $ \product -> do
@@ -757,3 +738,5 @@ main = do
   print $ y
   print $ x == y
 -}
+
+
