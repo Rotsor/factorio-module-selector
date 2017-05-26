@@ -1,3 +1,4 @@
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveGeneric #-}
@@ -31,24 +32,19 @@ import qualified Numeric.LinearAlgebra.Data
 import Matrix
 
 data RawMaterial =
-  BuriedIron
-  | BuriedCopper
-  | PetroleumGas
-  | LightOil
-  | HeavyOil
-  | BuriedCoal
+  BuriedIronRaw
+  | BuriedCopperRaw
+  | PetroleumGasRaw
+  | LightOilRaw
+  | HeavyOilRaw
+  | BuriedCoalRaw
   deriving (Eq, Ord, Enum, Bounded, Show, Ix, Generic)
 
 instance NFData RawMaterial
 
-type RawMaterialPressure = Vector RawMaterial Rational
+type RawMaterialPressure = Map Product Rat
 
-allOfThem = [minBound..maxBound]
-
-negateRawMaterialPressure x = fmap negate x
-addRawMaterialPressure f g = matrixZipWith (+) f g
-
-data IntermediateProduct =
+data Product =
   IronPlate
   | CopperPlate
   | SteelPlate
@@ -79,6 +75,7 @@ data IntermediateProduct =
   | Sulfur
   | SulfuricAcid
   | CoalLiquefaction
+  | CoalLiquefactionResearch
   | Inserter
   | TransportBelt
   | AssemblingMachine1
@@ -91,45 +88,19 @@ data IntermediateProduct =
   | Stone
   | Energy -- in J
   | SolidFuel
+  | Steam
   | Coal
+  | BuriedIron
+  | BuriedCopper
+  | PetroleumGas
+  | LightOil
+  | HeavyOil
+  | BuriedCoal
   deriving (Eq, Ord, Show, Enum, Bounded, Ix, Generic)
 
-instance NFData IntermediateProduct where
+instance NFData Product where
 
-data Product =
-  Raw RawMaterial
-  | Intermediate IntermediateProduct
-  deriving (Eq, Ord)
-
-instance Bounded Product where
-  minBound = Raw minBound
-  maxBound = Intermediate maxBound
-
-instance Enum Product where
-  fromEnum (Raw raw) = fromEnum raw
-  fromEnum (Intermediate intermediate) = Array.rangeSize (minBound, maxBound :: RawMaterial) + fromEnum intermediate
-
-  toEnum x
-    | x < Array.rangeSize (minBound, maxBound :: RawMaterial) = Raw (toEnum x)
-    | otherwise = Intermediate (toEnum (x - Array.rangeSize (minBound, maxBound :: RawMaterial)))
-
-instance Ix Product where
-  range (Raw a, Raw b) = map Raw (range (a, b))
-  range (Raw a, Intermediate b) = map Raw (range (a, maxBound)) ++ map Intermediate (range (minBound, b))
-  range (Intermediate a, Intermediate b) = map Intermediate (range (a, b))
-
-  index (Raw a, _) (Raw b) = Array.index (a, maxBound) b
-  index (Raw a, Intermediate b) (Intermediate x) = Array.rangeSize (a, maxBound) + Array.index (minBound, b) x
-  index (Intermediate a, Intermediate b) (Intermediate x) = Array.index (a, b) x
-
-  inRange (Intermediate _, _) (Raw _) = False
-  inRange (_, Raw _) (Intermediate _) = False
-  inRange (Raw a, Raw b) (Raw x) = Array.inRange (a, b) x
-  inRange (Intermediate a, Intermediate b) (Intermediate x) = Array.inRange (a, b) x
-  inRange (Raw a, Intermediate b) (Raw x) = Array.inRange (a, maxBound) x
-  inRange (Raw a, Intermediate b) (Intermediate x) = Array.inRange (minBound, b) x
-
-data Time = Time Rational
+data Time = Time Rat deriving (Eq, Ord, Show)
 
 data FactoryKind =
   Assembly
@@ -138,12 +109,14 @@ data FactoryKind =
   | Miner
   | Lab
   | Boiler
+  | Refinery
+  deriving (Show, Eq, Ord)
 
 data Config = Config
   { 
-    configSpeedBonus :: Rational,
-    configProductivityBonus :: Rational,
-    configEnergyBonus :: Rational
+    configSpeedBonus :: Rat,
+    configProductivityBonus :: Rat,
+    configEnergyBonus :: Rat
   } deriving Show
 
 speedMultiplier x = 1 + configSpeedBonus x
@@ -171,7 +144,7 @@ moduleToConfig ProductivityModule = Config (negate 0.15) 0.04 0.4
 moduleToConfig ProductivityModule2 = Config (negate 0.15) 0.06 0.6
 moduleToConfig ProductivityModule3 = Config (negate 0.15) 0.10 0.8
 
-allModules :: Usability -> [([IntermediateProduct], Config)]
+allModules :: Usability -> [([Product], Config)]
 allModules usability =
   [ ([], Config 0 0 0) ] ++
   (map (\m -> ([m], moduleToConfig m)) $
@@ -197,7 +170,7 @@ choose k l
      [] -> []
      (x : xs) -> map (x:) (choose (k-1) l) ++ choose k xs
 
-availableConfigs :: FactoryKind -> Usability -> [([IntermediateProduct], Config)]
+availableConfigs :: FactoryKind -> Usability -> [([Product], Config)]
 availableConfigs kind usability =
   let availableModules = allModules usability in
   map mconcat $ case kind of
@@ -209,7 +182,7 @@ availableConfigs kind usability =
     Boiler -> choose 0 availableModules
 
 -- in Watt
-data Power = Power { unPower :: Rational }
+data Power = Power { unPower :: Rat }
 
 basePower :: FactoryKind -> Power
 basePower Assembly = Power 210e3
@@ -218,13 +191,15 @@ basePower Smelter = Power 180e3
 basePower Chemical = Power 210e3
 basePower Lab = Power 60e3
 basePower Boiler = Power 0
+basePower Refinery = Power 420e3
 
-baseSpeed Assembly = 1.25 -- CR-someday: allow for blue assembly machines
+baseSpeed Assembly = 1.25 -- CR-soon: allow for blue assembly machines
 baseSpeed Miner = 1 -- factored in into the recipe
 baseSpeed Smelter = 2
 baseSpeed Chemical = 1.25
 baseSpeed Lab = 1 -- CR-someday: take upgrades into account
 baseSpeed Boiler = 1 -- nothing cares about this
+baseSpeed Refinery = 1
 
 p1 = ProductivityModule
 p2 = ProductivityModule2
@@ -232,137 +207,118 @@ p3 = ProductivityModule3
 s1 = SpeedModule
 s2 = SpeedModule2
 e1 = EfficiencyModule
-currentModules SciencePackProduction = [p1, p1, p1, p1]
-currentModules SciencePack3 = [p1, p1, p1, p1]
-currentModules ElectronicCircuit = [p1, p2, p2, p2]
-currentModules GearWheel = [p1, p1, p1, s1]
-currentModules CoalLiquefaction = [p1, p1]
-currentModules ElectricEngineUnit = [s1, p1, p1, p1]
-currentModules AdvancedCircuit = [p1, p1, s1]
-currentModules Plastic = [p1]
-currentModules SciencePack2 = [p1]
-{- 
-currentModules GearWheel = [s1, p2, p2, p2]
-currentModules AdvancedCircuit = [p1, p1, p1, s1]
-currentModules Plastic = [p1, p1, e1]
-currentModules CopperCable = [p1, e1, e1, e1]
-currentModules EngineUnit = [p1, e1, e1, e1]
-currentModules Pipe = [e1, e1, e1]
-currentModules SciencePack3 = [s1, p1, p1, p1]
-currentModules ElectricMiningDrill = [e1, e1, e1]
-currentModules SteelPlate = [e1, e1]
-currentModules CopperPlate = [e1, e1]
-currentModules IronPlate = [e1, e1]
-currentModules CopperOre = [e1, e1]
-currentModules IronOre = [e1, e1] -}
+currentModules' SciencePackProduction = [p1, p1, p1, p1]
+currentModules' SciencePack3 = [p1, p1, p1, p1]
+currentModules' ElectronicCircuit = [p1, p2, p2, p2]
+currentModules' GearWheel = [p1, p1, p1, s1]
+currentModules' CoalLiquefaction = [p1, p1]
+currentModules' ElectricEngineUnit = [s1, p1, p1, p1]
+currentModules' AdvancedCircuit = [p1, p1, s1]
+currentModules' Plastic = [p1]
+currentModules' SciencePack2 = [p1]
+currentModules' _ = []
 
-{-currentModules GearWheel = [p1, p1, p1, p1]
-currentModules Pipe = [p1, p1, p1, s1]
-currentModules AdvancedCircuit = [p1, p1, p1, s1]
-currentModules Plastic = [e1, p1, p1]
-currentModules CopperCable = [e1, e1, e1, p1]
-currentModules SciencePack3 = [e1, e1, e1]
-currentModules ElectricMiningDrill = [e1, e1, e1]
-currentModules EngineUnit = [e1, e1, e1, p1]
--}
-currentModules _ = []
+currentModules (Recipe { recipeProducts }) =
+  case recipeProducts of
+    [ (product, _) ] -> currentModules' product
+    _ -> []
+  
 
-currentConfig :: IntermediateProduct -> Config
+currentConfig :: Recipe -> Config
 currentConfig = mconcat . map moduleToConfig . currentModules
-
-is :: [(IntermediateProduct, Rational)] -> [(Product, Rational)]
-is = map (first Intermediate)
 
 scaleTime s (Time t) = Time (s * t)
 
 coalToEnergy coal = coal * 8e6 / 2
 
-recipe :: IntermediateProduct -> ([(Product, Rational)], FactoryKind, Time)
-recipe =
-  let many n (rs, kind, time) = (map (second (/n)) rs, kind, scaleTime (recip n) time) in
-    let
-       recipe GearWheel = (is [(IronPlate, 4)], Assembly, Time 0.5)
-       recipe IronPlate = (is [(IronOre, 1)], Smelter, Time 3.5)
-       recipe CopperPlate = (is [(CopperOre, 1)], Smelter, Time 3.5)
-       recipe SteelPlate = (is [(IronPlate, 10)], Smelter, Time 35)
-       recipe IronOre = ([(Raw BuriedIron, 1)], Miner, Time (1/0.525))
-       recipe CopperOre = ([(Raw BuriedCopper, 1)], Miner, Time (1/0.525))
-       recipe Coal = ([(Raw BuriedCoal, 1)], Miner, Time (1/0.525))
-       recipe Plastic = many 2 ([(Raw PetroleumGas, 20), (Intermediate Coal, 1)], Chemical, Time 1)
-       recipe ElectronicCircuit = (is [(CopperCable, 10), (IronPlate, 2)], Assembly, Time 0.5)
-       recipe AdvancedCircuit = (is [(Plastic, 4), (CopperCable, 8), (ElectronicCircuit, 2)], Assembly, Time 6)
-       recipe CopperCable = many 2 (is [(CopperPlate, 1)], Assembly, Time 0.5)
-       recipe Pipe = (is [(IronPlate, 2)], Assembly, Time 0.5)
-       recipe EngineUnit = (is [(GearWheel, 1), (Pipe, 2), (SteelPlate, 1)], Assembly, Time 10)
-       recipe ElectricMiningDrill = (is [(GearWheel, 10), (IronPlate, 20), (ElectronicCircuit, 5)], Assembly, Time 2)
-       recipe SciencePack3 = (is [(AdvancedCircuit, 1), (ElectricMiningDrill, 1), (EngineUnit, 1)], Assembly, Time 12)
-       recipe SciencePack1 = (is [(CopperPlate, 1), (GearWheel, 1)], Assembly, Time 5)
-       recipe SciencePack2 = (is [(Inserter, 1), (TransportBelt, 1)], Assembly, Time 6)
-       recipe SciencePackProduction = many 2 (is [(AssemblingMachine1, 1), (ElectricEngineUnit, 1), (ElectricFurnace, 1)], Assembly, Time 14)
-       recipe SpeedModule = (is [(AdvancedCircuit, 5), (ElectronicCircuit, 5)], Assembly, Time 15)
-       recipe EfficiencyModule = (is [(AdvancedCircuit, 5), (ElectronicCircuit, 5)], Assembly, Time 15)
-       recipe ProductivityModule = (is [(AdvancedCircuit, 5), (ElectronicCircuit, 5)], Assembly, Time 15)
-       recipe EfficiencyModule2 = (is [(AdvancedCircuit, 5), (EfficiencyModule, 4), (ProcessingUnit, 5)], Assembly, Time 30)
-       recipe SpeedModule2 = (is [(AdvancedCircuit, 5), (SpeedModule, 4), (ProcessingUnit, 5)], Assembly, Time 30)
-       recipe ProductivityModule2 = (is [(AdvancedCircuit, 5), (ProductivityModule, 4), (ProcessingUnit, 5)], Assembly, Time 30)
-       recipe ProductivityModule3 = (is [(AdvancedCircuit, 5), (ProductivityModule2, 5), (ProcessingUnit, 5)], Assembly, Time 60)
-       recipe SpeedModule3 = (is [(AdvancedCircuit, 5), (SpeedModule2, 5), (ProcessingUnit, 5)], Assembly, Time 60)
-       recipe EfficiencyModule3 = (is [(AdvancedCircuit, 5), (EfficiencyModule2, 5), (ProcessingUnit, 5)], Assembly, Time 60)
-       recipe ProcessingUnit = (is [(AdvancedCircuit, 2), (ElectronicCircuit, 20), (SulfuricAcid, 10)], Assembly, Time 10)
-       recipe SulfuricAcid = many 50 (is [(IronPlate, 1), (Sulfur, 5)], Chemical, Time 1)
-       recipe Sulfur = many 2 ([(Raw PetroleumGas, 30)], Chemical, Time 1)
-       recipe CoalLiquefaction = many (1/800) (is [(SciencePack1, 1), (SciencePack2, 1), (SciencePack3, 1), (SciencePackProduction, 1)], Lab, Time 30)
-       recipe Inserter = (is [(ElectronicCircuit, 1), (IronPlate, 1), (GearWheel, 1)], Assembly, Time 0.5)
-       recipe TransportBelt = many 2 (is [(GearWheel, 1), (IronPlate, 1)], Assembly, Time 0.5)
-       recipe AssemblingMachine1 = (is [(GearWheel, 5), (IronPlate, 9), (ElectronicCircuit, 3)], Assembly, Time 0.5)
-       recipe AssemblingMachine2 = (is [(AssemblingMachine1, 1), (ElectronicCircuit, 5), (GearWheel, 10), (IronPlate, 20)], Assembly, Time 0.5)
-       recipe AssemblingMachine3 = (is [(AssemblingMachine2, 2), (SpeedModule, 4)], Assembly, Time 0.5)
-       recipe ElectricFurnace = (is [(AdvancedCircuit, 5), (SteelPlate, 10), (StoneBrick, 10)], Assembly, Time 5)
-       recipe ElectricEngineUnit = (is [(ElectronicCircuit, 2), (EngineUnit, 1), (Lubricant, 15)], Assembly, Time 10)
-       recipe StoneBrick = (is [(Stone, 2)], Smelter, Time 3.5)
-       recipe Stone = (is [], Miner, Time 0.65) -- incorrect components
-       recipe Lubricant = ([(Raw PetroleumGas, 5)], Chemical, Time 1) -- incorrect components
-       recipe Energy = many (25e6 * 0.5) ([(Raw LightOil, 1)], Boiler, Time 1) -- incorrect time, but nothing cares
-       -- recipe Energy = many (25e6 * 0.5) ([(Intermediate SolidFuel, 1)], Boiler, Time 1) -- incorrect time, but nothing cares
-       recipe SolidFuel = ([(Raw LightOil, 10)], Chemical, Time 3)
-       recipe x = error $ "undefined recipe for: " ++ show x
-  in
-  recipe
+data Recipe = Recipe
+  {
+    recipeProducts :: [(Product, Rat)],
+    recipeMaterials :: [(Product, Rat)],
+    recipeVenue :: FactoryKind,
+    recipeTime :: Time
+  } deriving (Eq, Ord, Show)
 
-scale :: Rational -> RawMaterialPressure -> RawMaterialPressure
-scale s f = vector_of_function (\x -> vector_lookup f x * s)
+energy_per_steam = 30000
 
-mconcat' = foldr addRawMaterialPressure (vector_of_function (\_ -> 0))
+recipes :: [Recipe]
+recipes =
+  [
+    Recipe [(GearWheel, 1)]  [(IronPlate, 4)] Assembly (Time 0.5),
+    Recipe [(IronPlate, 1)]  [(IronOre, 1)] Smelter (Time 3.5),
+    Recipe [(CopperPlate, 1)]  [(CopperOre, 1)] Smelter (Time 3.5),
+    Recipe [(SteelPlate, 1)]  [(IronPlate, 10)] Smelter (Time 35),
+    Recipe [(IronOre, 1)] [(BuriedIron, 1)] Miner (Time (1/0.525)),
+    Recipe [(CopperOre, 1)] [(BuriedCopper, 1)] Miner (Time (1/0.525)),
+    Recipe [(Coal, 1)]  [(BuriedCoal, 1)] Miner ( Time (1/0.525)),
+    Recipe [(Plastic, 2)] [(PetroleumGas, 20), (Coal, 1)] Chemical (Time 1),
+    Recipe [(ElectronicCircuit, 1)]  [(CopperCable, 10), (IronPlate, 2)] Assembly ( Time 0.5),
+    Recipe [(AdvancedCircuit, 1)]  [(Plastic, 4), (CopperCable, 8), (ElectronicCircuit, 2)] Assembly ( Time 6),
+    Recipe [(CopperCable, 2)]  [(CopperPlate, 1)] Assembly ( Time 0.5),
+    Recipe [(Pipe, 1)]  [(IronPlate, 2)] Assembly ( Time 0.5),
+    Recipe [(EngineUnit, 1)]  [(GearWheel, 1), (Pipe, 2), (SteelPlate, 1)] Assembly ( Time 10),
+    Recipe [(ElectricMiningDrill, 1)]  [(GearWheel, 10), (IronPlate, 20), (ElectronicCircuit, 5)] Assembly ( Time 2),
+    Recipe [(SciencePack3, 1)]  [(AdvancedCircuit, 1), (ElectricMiningDrill, 1), (EngineUnit, 1)] Assembly ( Time 12),
+    Recipe [(SciencePack1, 1)]  [(CopperPlate, 1), (GearWheel, 1)] Assembly ( Time 5),
+    Recipe [(SciencePack2, 1)]  [(Inserter, 1), (TransportBelt, 1)] Assembly ( Time 6),
+    Recipe [(SciencePackProduction, 2)]  [(AssemblingMachine1, 1), (ElectricEngineUnit, 1), (ElectricFurnace, 1)] Assembly ( Time 14),
+    Recipe [(SpeedModule, 1)]  [(AdvancedCircuit, 5), (ElectronicCircuit, 5)] Assembly ( Time 15),
+    Recipe [(EfficiencyModule, 1)]  [(AdvancedCircuit, 5), (ElectronicCircuit, 5)] Assembly ( Time 15),
+    Recipe [(ProductivityModule, 1)]  [(AdvancedCircuit, 5), (ElectronicCircuit, 5)] Assembly ( Time 15),
+    Recipe [(EfficiencyModule2, 1)]  [(AdvancedCircuit, 5), (EfficiencyModule, 4), (ProcessingUnit, 5)] Assembly ( Time 30),
+    Recipe [(SpeedModule2, 1)]  [(AdvancedCircuit, 5), (SpeedModule, 4), (ProcessingUnit, 5)] Assembly ( Time 30),
+    Recipe [(ProductivityModule2, 1)]  [(AdvancedCircuit, 5), (ProductivityModule, 4), (ProcessingUnit, 5)] Assembly ( Time 30),
+    Recipe [(ProductivityModule3, 1)]  [(AdvancedCircuit, 5), (ProductivityModule2, 5), (ProcessingUnit, 5)] Assembly ( Time 60),
+    Recipe [(SpeedModule3, 1)]  [(AdvancedCircuit, 5), (SpeedModule2, 5), (ProcessingUnit, 5)] Assembly ( Time 60),
+    Recipe [(EfficiencyModule3, 1)]  [(AdvancedCircuit, 5), (EfficiencyModule2, 5), (ProcessingUnit, 5)] Assembly ( Time 60),
+    Recipe [(ProcessingUnit, 1)]  [(AdvancedCircuit, 2), (ElectronicCircuit, 20), (SulfuricAcid, 10)] Assembly ( Time 10),
+    Recipe [(SulfuricAcid, 50)]  [(IronPlate, 1), (Sulfur, 5)] Chemical ( Time 1),
+    Recipe [(Sulfur, 2)]  [(PetroleumGas, 30)] Chemical ( Time 1),
+    Recipe [(CoalLiquefactionResearch, 1/800)]  [(SciencePack1, 1), (SciencePack2, 1), (SciencePack3, 1), (SciencePackProduction, 1)] Lab ( Time 30),
+    Recipe [(Inserter, 1)]  [(ElectronicCircuit, 1), (IronPlate, 1), (GearWheel, 1)] Assembly ( Time 0.5),
+    Recipe [(TransportBelt, 2)]  [(GearWheel, 1), (IronPlate, 1)] Assembly ( Time 0.5),
+    Recipe [(AssemblingMachine1, 1)]  [(GearWheel, 5), (IronPlate, 9), (ElectronicCircuit, 3)] Assembly ( Time 0.5),
+    Recipe [(AssemblingMachine2, 1)]  [(AssemblingMachine1, 1), (ElectronicCircuit, 5), (GearWheel, 10), (IronPlate, 20)] Assembly ( Time 0.5),
+    Recipe [(AssemblingMachine3, 1)]  [(AssemblingMachine2, 2), (SpeedModule, 4)] Assembly ( Time 0.5),
+    Recipe [(ElectricFurnace, 1)]  [(AdvancedCircuit, 5), (SteelPlate, 10), (StoneBrick, 10)] Assembly ( Time 5),
+    Recipe [(ElectricEngineUnit, 1)]  [(ElectronicCircuit, 2), (EngineUnit, 1), (Lubricant, 15)] Assembly ( Time 10),
+    Recipe [(StoneBrick, 1)]  [(Stone, 2)] Smelter ( Time 3.5),
+    Recipe [(Stone, 1)]  [] Miner ( Time 0.65), -- incorrect components
+    Recipe [(Lubricant, 10)]  [(HeavyOil, 10)] Chemical (Time 1),
+    
+--    Recipe [(Steam, (25e6 * 0.5) / energy_per_steam)] [(SolidFuel, 1)] Boiler (Time 1), -- incorrect time, but nothing cares
+    Recipe [(Steam, (8e6 * 0.5) / energy_per_steam)] [(Coal, 1)] Boiler (Time 1), -- incorrect time, but nothing cares
+    Recipe [(Energy, energy_per_steam)] [(Steam, 1)] Boiler (Time 1), -- incorrect time and venue, but nothing goes wrong
+    
+    Recipe [(PetroleumGas, 2)] [(LightOil, 3)] Chemical (Time 5),
+    
+    Recipe [(SolidFuel, 1)] [(LightOil, 10)] Chemical (Time 3),
+    Recipe [(LightOil, 3)] [(HeavyOil, 4)] Chemical (Time 5),
+    Recipe [(HeavyOil, 35), (LightOil, 15), (PetroleumGas, 20)] [(Coal, 10), (HeavyOil, 25), (Steam, 50)] Refinery (Time 5)
+  ]
+
+scale :: Rat -> RawMaterialPressure -> RawMaterialPressure
+scale s = fmap (s*)
+
+mconcat' x = foldr add zero x
 
 functionToMatrix :: (Num v, Ix' b, Ix' a) => (a -> [(b, v)]) -> Matrix a b v
 functionToMatrix f =
   Matrix (Array.array fullRange [ ((a, b), maybe 0 id (Map.lookup b bs)) | a <- range fullRange, let bs = Map.fromListWith (+) (f a), b <- range fullRange])
 
-recipesToMatrix :: (IntermediateProduct -> Config) -> Matrix IntermediateProduct Product Rational
+recipesToMatrix :: (Recipe -> Config) -> [Map Product Rat]
 recipesToMatrix configs =
-  functionToMatrix
-  (\product ->
-     let config = configs product in
-     let (components, kind, Time time) = recipe product in
-       let energy = (time / (speedMultiplier config * baseSpeed kind)) * unPower (basePower kind) * energyMultiplier config in
-       map (second (* (recip $ productivityMultiplier config)))
-         (components ++ [(Intermediate Energy, energy)])
-  )
+  map (\recipe@(Recipe production consumption venue (Time time)) ->
+         let config = configs recipe in
+           let energy = (time / (speedMultiplier config * baseSpeed venue)) * unPower (basePower venue) * energyMultiplier config in
+             Map.fromListWith add (consumption ++ [(Energy, energy)] ++ map (second ((* productivityMultiplier config) . negate)) production)
+         ) recipes
 
 instance (Ix' a, Ix' b) => Enum (a, b) where
   fromEnum (x, (y :: b)) = fromEnum x * Array.rangeSize (fullRange :: (b, b)) + fromEnum y
   toEnum i =
     let (d, m) = i `divMod` (Array.rangeSize (fullRange :: (b, b))) in
       (toEnum d, (toEnum m :: b))
-
-recipesToMatrix' :: (IntermediateProduct -> Config) -> (Matrix IntermediateProduct IntermediateProduct Rational, Vector RawMaterial (Vector IntermediateProduct Rational))
-recipesToMatrix' configs =
-  let
-    m :: Array (IntermediateProduct, Product) Rational
-    Matrix m = recipesToMatrix configs
-  in
-    (Matrix (f_array (\(a, b) -> m ! (a, Intermediate b)))
-    ,Matrix (f_array (\(b, ()) -> Matrix (f_array (\(a, ()) -> m ! (a, Raw b))))))
 
 matrix_add (Matrix x) (Matrix y) = Matrix (Array.array fullRange [(i, x ! i + y ! i) | i <- range fullRange])
 matrix_negate (Matrix x) = Matrix (Array.array fullRange [(i, - x ! i) | i <- range fullRange])
@@ -392,46 +348,46 @@ matrix_inverse_precise :: (Ix' a, Num v, Fractional v, Eq v) => Matrix a a v -> 
 matrix_inverse_precise x = trace "inverting" $ of_data_matrix . (\(Right res) -> res) . Data.Matrix.inverse . to_data_matrix $ x
 
 
-to_hmatrix :: forall a . (Ix' a) => Matrix a a Rational -> Numeric.LinearAlgebra.HMatrix.Matrix Double
+to_hmatrix :: forall a . (Ix' a) => Matrix a a Rat -> Numeric.LinearAlgebra.HMatrix.Matrix Double
 to_hmatrix (Matrix m) =
   Numeric.LinearAlgebra.Data.fromLists
    $ [
-     [ fromRational (m ! (i, j))
+     [ fromRational . toRational $ (m ! (i, j))
        | j <- range fullRange
      ]
      | i <- range fullRange
      ]
 
-of_hmatrix :: forall a . Ix' a => Numeric.LinearAlgebra.HMatrix.Matrix Double -> Matrix a a Rational
+of_hmatrix :: forall a . Ix' a => Numeric.LinearAlgebra.HMatrix.Matrix Double -> Matrix a a Rat
 of_hmatrix m =
   let (all_as :: [a]) = range fullRange in
   Matrix (Array.array fullRange
-          [ ((i, j), toRational v)
+          [ ((i, j), fromRational . toRational $ v)
           | (i, r) <- zip all_as (Numeric.LinearAlgebra.Data.toLists m)
           , (j, v) <- zip all_as r])
 
-matrix_inverse_hmatrix :: (Ix' a) => Matrix a a Rational -> Matrix a a Rational
+matrix_inverse_hmatrix :: (Ix' a) => Matrix a a Rat -> Matrix a a Rat
 matrix_inverse_hmatrix x = of_hmatrix . Numeric.LinearAlgebra.HMatrix.inv . to_hmatrix $ x
 
-to_eigen_matrix :: forall a . (Ix' a) => Matrix a a Rational -> Data.Eigen.Matrix.Matrix Double CDouble
+to_eigen_matrix :: forall a . (Ix' a) => Matrix a a Rat -> Data.Eigen.Matrix.Matrix Double CDouble
 to_eigen_matrix (Matrix m) =
   Data.Eigen.Matrix.fromList
    [
-     [ fromRational (m ! (toEnum (i - 1), toEnum (j - 1)))
+     [ fromRational . toRational $ (m ! (toEnum (i - 1), toEnum (j - 1)))
        | j <- range fullRange
      ]
      | i <- range fullRange
      ]
 
-of_eigen_matrix :: forall a . Ix' a => Data.Eigen.Matrix.Matrix Double CDouble -> Matrix a a Rational
+of_eigen_matrix :: forall a . Ix' a => Data.Eigen.Matrix.Matrix Double CDouble -> Matrix a a Rat
 of_eigen_matrix m =
   let (all_as :: [a]) = range fullRange in
   Matrix (Array.array fullRange
-          [ ((i, j), toRational v)
+          [ ((i, j), fromRational . toRational $ v)
           | (i, r) <- zip all_as (Data.Eigen.Matrix.toList m)
           , (j, v) <- zip all_as r])
 
-matrix_inverse_eigen :: (Ix' a) => Matrix a a Rational -> Matrix a a Rational
+matrix_inverse_eigen :: (Ix' a) => Matrix a a Rat -> Matrix a a Rat
 matrix_inverse_eigen x = of_eigen_matrix . Data.Eigen.Matrix.inverse . to_eigen_matrix $ x
 
 matrix_inverse_verified inverse x =
@@ -444,63 +400,60 @@ matrix_inverse x = matrix_inverse_verified matrix_inverse_own x
 -- solve_equation :: (Ix' a, Num v, Fractional v, Eq v) => Matrix a a v -> Vector a v -> Vector a v
 -- solve_equation a x0 = matrix_inverse (matrix_subtract a matrix_identity) `matrix_mult` matrix_negate x0
 
+sparse_transpose :: (Ord a, Ord b) => Map a (Map b v) -> Map b (Map a v)
+sparse_transpose m =
+  fmap
+  Map.fromList
+  $ Map.fromListWith (++) (concatMap (\(a, m') -> map (\(b, v) -> (b, [(a, v)])) (Map.toList m')) (Map.toList m))
+
+
+matrix_to_sparse :: (Ix' a, Ix' b, Ord b, Linear v, Eq v) => Matrix a b v -> [(a, (Map b v))]
+matrix_to_sparse (Matrix m) =
+  [ (a, Map.fromList
+    [
+      (b, x)
+      | b <- range fullRange
+      , let x = m ! (a,b)
+      , x /= zero
+    ])
+    | a <- range fullRange
+  ]
+
+
+type RawProduct = Product
+
 solvedRecipes
-  :: (IntermediateProduct -> Config)
-     -> Vector RawMaterial (Vector IntermediateProduct Rational)
+  :: (Recipe -> Config)
+     -> Map Product (Map RawProduct Rat)
 solvedRecipes configs =
-  let (a, x0) = recipesToMatrix' configs in
-    let a' = matrix_inverse (matrix_subtract a matrix_identity) in
-      fmap (\x0 -> a' `matrix_mult` matrix_negate x0) x0
+  solutionDecompose (find_kernel (/) (*) (recipesToMatrix configs))
 
 vector_lookup :: Ix' a => Vector a v -> a -> v
 vector_lookup (Matrix x) a = x ! (a, ())
 
-compute'_new :: (IntermediateProduct -> Config) -> IntermediateProduct -> RawMaterialPressure
+compute'_new :: (Recipe -> Config) -> Product -> RawMaterialPressure
 compute'_new configs =
-  let recipes = (solvedRecipes configs) in
-   \product -> fmap (\v -> vector_lookup v product) recipes
+  let recipes = solvedRecipes configs in
+   \product -> case Map.lookup product recipes of
+     Nothing -> Map.empty
+     Just m -> m
 
-compute'_old :: (IntermediateProduct -> Config) -> IntermediateProduct -> RawMaterialPressure
-compute'_old configs product = case recipe product of
-  (components, kind, Time time) ->
-    let energy = (time / (speedMultiplier config * baseSpeed kind)) * unPower (basePower kind) * energyMultiplier config in
-     scale (recip $ productivityMultiplier config) $
-     foldr addRawMaterialPressure (vector_of_function (\_ -> 0))
-      [ scale quantity
-        (case product of
-           Raw raw -> vector_of_function (\x -> if x == raw then 1 else 0)
-           Intermediate intermediate -> computeTotalCost intermediate
-        )
-        |
-        (product, quantity) <- (components ++ [(Intermediate Energy, energy) | energy /= 0])
-      ]
-    where
-      config = configs product
+compute_recipe config =
+  let compute = compute'_new config in
+    \recipe ->
+      mconcat'
+        [ scale quantity (compute product)
+        | (product, quantity) <- recipeProducts recipe
+        ]
 
-compute' f =
-  let co = compute'_old f in
-  let cn = compute'_new f in
-  \info x ->
-    let v1 = co x in
-    let v2 = cn x in
-    if v1 == v2 then v1 else error $ "disagreement!\n" ++ show info ++ "\n" ++ show x
+compute' f = compute'_new f
 
 data SparseMatrix a b v = SparseMatrix [(a, Map b v)]
-
-class Linear a where
-  zero :: a
-  add :: a -> a -> a
-  minus :: a -> a
 
 data MatrixError =
   Not_enough_equations
   | Contradicting_equations
   deriving Show
-
-instance Linear Rational where
-  zero = 0
-  add = (+)
-  minus x = -x
 
 instance (Linear v, Ix' a, Ix' b) => Linear (Matrix a b v) where
   zero = Matrix (f_array (\(a, b) -> zero))
@@ -600,56 +553,62 @@ solve_equation divide mult_v1 mult_v2 mult' divide' rows = go rows where
               let sum_of_lhs = foldr add zero lhs in
               Right (Map.insert chosen_b (divide' (add rhs (minus sum_of_lhs)) chosen_v) assignments)
 
-computeTotalCost :: IntermediateProduct -> RawMaterialPressure
-computeTotalCost = compute' currentConfig "normal"
+computeTotalCost :: Product -> RawMaterialPressure
+computeTotalCost = compute' currentConfig
 
-usability GearWheel = Unusable
-usability IronPlate = Unusable
-usability IronOre = Unusable
-usability CopperOre = Unusable
-usability CopperCable = Unusable
-usability ElectronicCircuit = Unusable
-usability AdvancedCircuit = Unusable
-usability Plastic = Unusable
-usability Sulfur = Unusable
-usability SulfuricAcid = Unusable
-usability EngineUnit = Unusable
-usability CopperPlate = Unusable
-usability SteelPlate = Unusable
-usability ElectricMiningDrill = Usable
-usability Pipe = Usable
-usability Inserter = Usable
-usability ElectricFurnace = Usable
-usability SciencePack1 = Unusable
-usability SciencePack2 = Unusable
-usability SciencePack3 = Unusable
-usability AssemblingMachine1 = Usable
-usability AssemblingMachine2 = Usable
-usability AssemblingMachine3 = Usable
-usability TransportBelt = Usable
-usability StoneBrick = Unusable
-usability Lubricant = Unusable
-usability SciencePackProduction = Unusable
-usability CoalLiquefaction = Unusable
-usability ElectricEngineUnit = Unusable
-usability Stone = Unusable
-usability Coal = Unusable
-usability ProcessingUnit = Unusable
-usability SpeedModule = Usable
-usability SpeedModule2 = Usable
-usability SpeedModule3 = Usable
-usability EfficiencyModule = Usable
-usability EfficiencyModule2 = Usable
-usability EfficiencyModule3 = Usable
-usability ProductivityModule = Usable
-usability ProductivityModule2 = Usable
-usability ProductivityModule3 = Usable
-usability SolidFuel = Unusable
-usability Energy = Usable
-usability x = error $ "undefined usability: " ++ show x
 
-evaluateTotalCost  :: RawMaterialPressure -> Rational
-evaluateTotalCost f = sum [ (fromRational (estimate x * vector_lookup f x)) | x <- allOfThem] where
+usability' GearWheel = Unusable
+usability' IronPlate = Unusable
+usability' IronOre = Unusable
+usability' CopperOre = Unusable
+usability' CopperCable = Unusable
+usability' ElectronicCircuit = Unusable
+usability' AdvancedCircuit = Unusable
+usability' Plastic = Unusable
+usability' Sulfur = Unusable
+usability' SulfuricAcid = Unusable
+usability' EngineUnit = Unusable
+usability' CopperPlate = Unusable
+usability' SteelPlate = Unusable
+usability' ElectricMiningDrill = Usable
+usability' Pipe = Usable
+usability' Inserter = Usable
+usability' ElectricFurnace = Usable
+usability' SciencePack1 = Unusable
+usability' SciencePack2 = Unusable
+usability' SciencePack3 = Unusable
+usability' AssemblingMachine1 = Usable
+usability' AssemblingMachine2 = Usable
+usability' AssemblingMachine3 = Usable
+usability' TransportBelt = Usable
+usability' StoneBrick = Unusable
+usability' Lubricant = Unusable
+usability' SciencePackProduction = Unusable
+usability' CoalLiquefaction = Unusable
+usability' ElectricEngineUnit = Unusable
+usability' Stone = Unusable
+usability' Coal = Unusable
+usability' ProcessingUnit = Unusable
+usability' SpeedModule = Usable
+usability' SpeedModule2 = Usable
+usability' SpeedModule3 = Usable
+usability' EfficiencyModule = Usable
+usability' EfficiencyModule2 = Usable
+usability' EfficiencyModule3 = Usable
+usability' ProductivityModule = Usable
+usability' ProductivityModule2 = Usable
+usability' ProductivityModule3 = Usable
+usability' SolidFuel = Unusable
+usability' Energy = Usable
+usability' x = error $ "undefined usability: " ++ show x
+
+usability recipe =
+  case recipeProducts recipe of
+    [(product, _)] -> usability' product
+    x -> error $ "undefined recipe usability: " ++ show recipe
+
+evaluateTotalCost  :: RawMaterialPressure -> Rat
+evaluateTotalCost f = sum [ (estimate k * v) | (k, v) <- Map.toList f, v /= zero] where
   estimate LightOil = 0.1
   estimate HeavyOil = 0.1
   estimate BuriedCoal = 1.5
@@ -657,32 +616,31 @@ evaluateTotalCost f = sum [ (fromRational (estimate x * vector_lookup f x)) | x 
   estimate BuriedCopper = 1
   estimate PetroleumGas = 0.1
 
-subtractRawMaterialPressure x y = addRawMaterialPressure x (fmap negate y)
+subtract' a b = add a (minus b)
 
-possibleSavings product =
-  let (_, kind, Time time) = recipe product in
+possibleSavings :: Recipe -> [(RawMaterialPressure, RawMaterialPressure, [Product])]
+possibleSavings recipe =
+  let venue = recipeVenue recipe in
+  let Time time = recipeTime recipe in
     [ let saving_per_unit =
-            addRawMaterialPressure
-            (compute' currentConfig "normal" product)
-            (fmap negate $ compute' (\p -> if p == product then config else currentConfig p) (show (product, config)) product)
+            add
+            (compute_recipe currentConfig recipe)
+            (fmap negate $ compute_recipe (\p -> if p == recipe then config else currentConfig p) recipe)
       in
         let saving_per_second =
               scale (recip $ time / speedMultiplier config) saving_per_unit
         in
           let
             cost =
-              subtractRawMaterialPressure (modulesCost modules) (scale (recip (speedMultiplier (currentConfig product)) * speedMultiplier config) $ modulesCost (currentModules product))
+              subtract' (modulesCost modules) (scale (recip (speedMultiplier (currentConfig recipe)) * speedMultiplier config) $ modulesCost (currentModules recipe))
           in
           (saving_per_second, cost, modules)
-      | (modules, config) <- availableConfigs kind (usability product)]
+      | (modules, config) <- availableConfigs venue (usability recipe)]
 
-newtype Dub = Dub Rational deriving (Eq, Ord, Generic, NFData)
+newtype Rat = Rat Rational deriving (Eq, Ord, Generic, NFData, Linear, Num, Fractional, Real)
 
-instance Show Dub where
-  show (Dub x) = printf "%.5f" (fromRational x :: Double)
-
-showTotalCost :: RawMaterialPressure -> String
-showTotalCost f = show [ (x, Dub (vector_lookup f x)) | x <- allOfThem]
+instance Show Rat where
+  show (Rat x) = printf "%.5f" (fromRational x :: Double)
 
 showModule SpeedModule = "s1"
 showModule SpeedModule2 = "s2"
@@ -699,20 +657,20 @@ divv a b = if b == 0 then 1e10 else a / b
 modulesCost modules = mconcat' $ map computeTotalCost modules
 
 possibleSavings' = sortBy (comparing (\(saving, cost, _details, _modules) -> divv saving cost)) . map (
-  \(x, cost, modules) -> (evaluateTotalCost x, evaluateTotalCost cost, showTotalCost x, concat $ map showModule modules)) . (`using` parList rdeepseq) . possibleSavings
+  \(x, cost, modules) -> (evaluateTotalCost x, evaluateTotalCost cost, show x, concat $ map showModule modules)) . (`using` parList rdeepseq) . possibleSavings
 
-ff x = Dub x
+ff x = x
 
 possibleSavings'' =
   [
-    (ff $ divv saving cost * 3600, (ff $ saving, ff $ cost, product, modules))
-  | product <- take 2 $ range fullRange
-  , (saving, cost, details, modules) <- possibleSavings' product
+    (ff $ divv saving cost * 3600, (ff $ saving, ff $ cost, recipe, modules))
+  | recipe <- take 2 $ recipes
+  , (saving, cost, details, modules) <- possibleSavings' recipe
   , cost /= 0
   ]
 
 possibleSavings''' =
-  reverse . take 50 . dropWhile (\(_, (gain, cost, _, _)) -> gain < Dub 0 && cost < Dub 0) . reverse . sortBy (comparing fst) $ possibleSavings''  
+  reverse . take 50 . dropWhile (\(_, (gain, cost, _, _)) -> gain < Rat 0 && cost < Rat 0) . reverse . sortBy (comparing fst) $ possibleSavings''  
 
 matrix_of_lists lists =
   Matrix (Array.array fullRange
@@ -720,20 +678,21 @@ matrix_of_lists lists =
           | (i, r) <- zip (range fullRange) lists
           , (j, v) <- zip (range fullRange) r])
 
-identity_matrix :: (Ix' a) => Matrix a a Rational
+identity_matrix :: (Ix' a) => Matrix a a Rat
 identity_matrix = Matrix (f_array (\(a,b) -> if a == b then 1 else 0))
 
-main = print $ length possibleSavings'''
+main = print $ scale (1e-4) $ computeTotalCost $ CoalLiquefactionResearch
+--main = print $ length possibleSavings'''
 -- main = mapM_ print $ possibleSavings'''
 {-
 main = do
- flip mapM_ (range fullRange :: [IntermediateProduct]) $ \product -> do
+ flip mapM_ (range fullRange :: [Product]) $ \product -> do
   let configs =
         (\p -> if p == GearWheel
           then Config {configSpeedBonus = 0, configProductivityBonus = 0, configEnergyBonus = 0}
           else currentConfig p)
-  let x = compute' configs "qq" GearWheel
-  let y = compute' configs "xx" GearWheel
+  let x = compute' configs GearWheel
+  let y = compute' configs GearWheel
   print $ x
   print $ y
   print $ x == y
