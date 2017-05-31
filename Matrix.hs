@@ -1,3 +1,5 @@
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -23,6 +25,7 @@ import Data.Array(Array, (!), range, Ix)
 import GHC.Generics
 import Control.Arrow
 import Control.Monad.Writer
+import Control.Monad.Identity
 
 import qualified Data.Set as Set
 import Data.Set(Set)
@@ -57,22 +60,40 @@ matrixZipWith f (Matrix a) (Matrix b) =
 f_array :: Ix' k => (k -> v) -> Array k v
 f_array f = Array.array fullRange [(k, f k) | k <- range fullRange]
 
-data Solution b v =
-  Solution
-  {
-    solutionFree :: Set b,
-    solutionDecompose :: Map b (Map b v)
-  } deriving Show
+type Solution b v = Map b (Map b v)
+
+type Solution_with_trace a b v =
+  -- decomposes as much products as it can, providing for each product:
+  -- 2. how much of non-decomposable products that uses
+  -- 1. how much of input recipes ([a]) went into it and
+  Map b (Map b v, Map a v)
 
 class Linear a where
   zero :: a
   add :: a -> a -> a
   minus :: a -> a
 
+instance (Linear a, Linear b) => Linear (a, b) where
+  zero = (zero, zero)
+  add (a1, b1) (a2, b2) = (add a1 a2, add b1 b2)
+  minus (a, b) = (minus a, minus b)
+
 instance Linear Rational where
   zero = 0
   add = (+)
   minus x = -x
+
+instance VectorSpace Rational where
+  type Scalar Rational = Rational
+  scale = (*)
+
+instance (Eq v, Ord k, VectorSpace v) => VectorSpace (Map k v) where
+  type Scalar (Map k v) = Scalar v
+  scale s = fmap (scale s)
+
+instance (VectorSpace a, VectorSpace b, Scalar a ~ Scalar b) => VectorSpace (a, b) where
+  type Scalar (a, b) = Scalar a
+  scale s = (scale s *** scale s)
 
 instance (Ord k, Linear v, Eq v) => Linear (Map k v) where
   zero = Map.empty
@@ -107,28 +128,87 @@ find_kernel divide mult_v1 rows = go rows where
     (\m -> if m Map.! b == zero then Map.delete b m else error "should be zero") $ addRow row1 (minusRow $ scaleRow (lookupLhs row1 b `divide` lookupLhs row0 b) row0)
   
   go :: [(Map b v1)] -> Solution b s
-  go [] = Solution { solutionFree = Set.empty, solutionDecompose = Map.empty }
+  go [] = Map.empty
   go (row0 : rest) = case [(b, v) | (b, v) <- Map.toList row0, v /= zero] of
     [] -> -- all coefficients are 0, equation is useless
       go rest
     (chosen_b, chosen_v) : _ ->
       case go (map (remove_b (chosen_b, row0)) rest) of
-        (Solution { solutionFree, solutionDecompose }) ->
-          case runWriter $ traverse (\(b, v) ->
+        solutionDecompose ->
+          case map (\(b, v) ->
                            if b == chosen_b
-                           then return Map.empty
+                           then Map.empty
                            else
                              case (Map.lookup b solutionDecompose) of
-                               Nothing -> do
-                                 tell [b]
-                                 return (Map.singleton b v)
+                               Nothing ->
+                                 Map.singleton b v
                                Just vs ->
-                                 return (fmap (`mult_v1` v) vs)
+                                 fmap (`mult_v1` v) vs
                         ) (Map.toList row0) of
-            (lhs, extra_free) ->
+            lhs ->
               let sum_of_lhs = Map.unionsWith add lhs in
-              Solution {
-                solutionFree = Set.union solutionFree (Set.fromList extra_free),
-                solutionDecompose =
-                  (Map.insert chosen_b (fmap ((`divide` chosen_v) . minus) sum_of_lhs) solutionDecompose)
-              }
+              (Map.insert chosen_b (fmap ((`divide` chosen_v) . minus) sum_of_lhs) solutionDecompose)
+
+class Linear a => VectorSpace a where
+  type Scalar a :: *
+  scale :: Scalar a -> a -> a
+
+find_kernel_with_trace ::
+  forall v a b s.
+  ( VectorSpace v
+  , Scalar v ~ v
+  , Ord a
+  , Fractional v
+  , Eq b
+  , Eq v
+  , Num v
+  , Ord b)
+  =>
+  (v -> v -> v)
+  -> (v -> v -> v)
+  -> Map a (Map b v) -> Solution_with_trace a b v
+find_kernel_with_trace divide mult_v1 rows = go (map (\(a, row) -> (row, Map.singleton a 1)) $ Map.toList rows) where
+
+  lookupLhs :: (Map b v, Map a v) -> b -> v
+  lookupLhs (lhs, _) b = case Map.lookup b lhs of
+    Nothing -> zero
+    Just x -> x
+
+  addRow = add
+
+  scaleRow = scale
+
+  minusRow = minus
+  
+  remove_b :: (b, (Map b v, Map a v)) -> (Map b v, Map a v) -> (Map b v, Map a v)
+  remove_b (b, row0) row1 =
+    (\(m, r) -> if Map.member b m then error "should be absent" else (m, r)) $ addRow row1 (minusRow $ scaleRow (lookupLhs row1 b `divide` lookupLhs row0 b) row0)
+  
+  go :: [(Map b v, Map a v)] -> Solution_with_trace a b v
+  go [] = Map.empty
+  go (row0 : rest) = case [(b, v) | (b, v) <- Map.toList (fst row0), v /= zero] of
+    [] -> -- all coefficients are 0, equation is useless
+      go rest
+    (chosen_b, chosen_v) : _ -> runIdentity $ do
+      row0 <- return $ scaleRow (recip chosen_v) row0
+      chosen_v <- return $ ()
+      rest <- return $ map (remove_b (chosen_b, row0)) rest
+      (lhs, rhs) <- return $ row0
+      row0 <- return $ ()
+      return $
+        case go rest of
+          solutionDecompose ->
+            case map (\(b, v) ->
+                             if b == chosen_b
+                             then zero
+                             else
+                               case Map.lookup b solutionDecompose of
+                                 Nothing -> do
+                                   (Map.singleton b v, zero) -- don't need any recipes to make the raw material
+                                 Just results ->
+                                   scale v results
+                          ) (Map.toList lhs) of
+              lhs ->
+                let sum_of_lhs = foldr add zero lhs in
+                (Map.insert chosen_b (add (minus sum_of_lhs) (zero, rhs)) solutionDecompose)
+
