@@ -60,9 +60,14 @@ data Product =
   | EngineUnit
   | ProcessingUnit
   | ElectricMiningDrill
+  | PiercingRoundMagazine
+  | FirearmRoundMagazine
+  | Grenade
+  | GunTurret
   | SciencePack1
   | SciencePack2
   | SciencePack3
+  | SciencePackMilitary
   | SciencePackProduction
   | SciencePackHighTech
   | SpeedModule
@@ -78,7 +83,8 @@ data Product =
   | SulfuricAcid
   | CoalLiquefaction
   | ResearchCoalLiquefaction
-  | ResearchNuclearPower
+  | ResearchLaserTurretDamage5
+  | ResearchRocketSilo
   | Inserter
   | TransportBelt
   | AssemblingMachine1
@@ -107,6 +113,15 @@ data Product =
 instance NFData Product where
 
 newtype Time = Time { unTime :: Rat } deriving (Eq, Ord, Show, NFData)
+
+instance Linear Time where
+  zero = Time 0
+  add (Time x) (Time y) = Time (add x y)
+  minus (Time x) = Time (minus x)
+
+instance VectorSpace Time where
+  type Scalar Time = Rat
+  scale x (Time t) = Time (x * t)
 
 data FactoryKind =
   Assembly
@@ -207,12 +222,15 @@ basePower Lab = Power 60e3
 basePower Boiler = Power 0
 basePower Refinery = Power 420e3
 
+
+labUpgrades = 1.5 -- +20% +30%
+
 baseSpeed Assembly = 0.75 -- blue by default, upgraded with a pseudomodule
-baseSpeed Miner = 1 -- factored in into the recipe
+baseSpeed Miner = 1 -- factored in into the recipe -- CR-someday: take productivity upgrades into account
 baseSpeed Smelter = 2
 baseSpeed Chemical = 1.25
-baseSpeed Lab = 1 -- CR-someday: take upgrades into account
-baseSpeed Boiler = 1 -- nothing cares about this
+baseSpeed Lab = labUpgrades -- CR-someday: take upgrades into account
+baseSpeed Boiler = 1 -- this is wrong; the only thing that depends on this is the thing that reports the number of boilers
 baseSpeed Refinery = 1
 
 currentConfig :: Recipe -> Config
@@ -224,6 +242,7 @@ coalToEnergy coal = coal * 8e6 / 2
 
 data Recipe = Recipe
   {
+    recipeName :: RecipeName,
     recipeProducts :: [(Product, Rat)],
     recipeMaterials :: [(Product, Rat)],
     recipeVenue :: FactoryKind,
@@ -233,82 +252,89 @@ data Recipe = Recipe
 data RecipeName =
   ProductRecipe Product
   | LiquefactionRecipe
-  | OtherRecipe Recipe
+  | BurnRecipe Product
   deriving (Eq, Ord)
 
 instance Show RecipeName where
   show (ProductRecipe product) = show product
   show (LiquefactionRecipe) = "Liquefaction"
-  show (OtherRecipe recipe) = show recipe
-
-recipeName (recipe@Recipe { recipeProducts }) =
-  case recipeProducts of
-    [(Steam, _)] -> OtherRecipe recipe
-    [(product, _)] -> ProductRecipe product
-    products | sort (map fst products) == sort [HeavyOil, LightOil, PetroleumGas] -> LiquefactionRecipe
-    x -> OtherRecipe recipe
+  show (BurnRecipe product) = "Burn" ++ show product
 
 energy_per_steam = 30000
 
 recipes :: [Recipe]
 recipes =
   [
-    Recipe [(GearWheel, 1)]  [(IronPlate, 4)] Assembly (Time 0.5),
-    Recipe [(IronPlate, 1)]  [(IronOre, 1)] Smelter (Time 3.5),
-    Recipe [(CopperPlate, 1)]  [(CopperOre, 1)] Smelter (Time 3.5),
-    Recipe [(SteelPlate, 1)]  [(IronPlate, 10)] Smelter (Time 35),
-    Recipe [(IronOre, 1)] [(BuriedIron, 1)] Miner (Time (1/0.525)),
-    Recipe [(CopperOre, 1)] [(BuriedCopper, 1)] Miner (Time (1/0.525)),
-    Recipe [(Coal, 1)]  [(BuriedCoal, 1)] Miner ( Time (1/0.525)),
-    Recipe [(Plastic, 2)] [(PetroleumGas, 20), (Coal, 1)] Chemical (Time 1),
-    Recipe [(ElectronicCircuit, 1)]  [(CopperCable, 10), (IronPlate, 2)] Assembly ( Time 0.5),
-    Recipe [(AdvancedCircuit, 1)]  [(Plastic, 4), (CopperCable, 8), (ElectronicCircuit, 2)] Assembly ( Time 6),
-    Recipe [(CopperCable, 2)]  [(CopperPlate, 1)] Assembly ( Time 0.5),
-    Recipe [(Pipe, 1)]  [(IronPlate, 2)] Assembly ( Time 0.5),
-    Recipe [(EngineUnit, 1)]  [(GearWheel, 1), (Pipe, 2), (SteelPlate, 1)] Assembly ( Time 10),
-    Recipe [(ElectricMiningDrill, 1)]  [(GearWheel, 10), (IronPlate, 20), (ElectronicCircuit, 5)] Assembly ( Time 2),
-    Recipe [(SciencePack3, 1)]  [(AdvancedCircuit, 1), (ElectricMiningDrill, 1), (EngineUnit, 1)] Assembly ( Time 12),
-    Recipe [(SciencePack1, 1)]  [(CopperPlate, 1), (GearWheel, 1)] Assembly ( Time 5),
-    Recipe [(SciencePack2, 1)]  [(Inserter, 1), (TransportBelt, 1)] Assembly ( Time 6),
-    Recipe [(SciencePackProduction, 2)]  [(AssemblingMachine1, 1), (ElectricEngineUnit, 1), (ElectricFurnace, 1)] Assembly ( Time 14),
-    Recipe [(SpeedModule, 1)]  [(AdvancedCircuit, 5), (ElectronicCircuit, 5)] Assembly ( Time 15),
-    Recipe [(EfficiencyModule, 1)]  [(AdvancedCircuit, 5), (ElectronicCircuit, 5)] Assembly ( Time 15),
-    Recipe [(ProductivityModule, 1)]  [(AdvancedCircuit, 5), (ElectronicCircuit, 5)] Assembly ( Time 15),
-    Recipe [(EfficiencyModule2, 1)]  [(AdvancedCircuit, 5), (EfficiencyModule, 4), (ProcessingUnit, 5)] Assembly ( Time 30),
-    Recipe [(SpeedModule2, 1)]  [(AdvancedCircuit, 5), (SpeedModule, 4), (ProcessingUnit, 5)] Assembly ( Time 30),
-    Recipe [(ProductivityModule2, 1)]  [(AdvancedCircuit, 5), (ProductivityModule, 4), (ProcessingUnit, 5)] Assembly ( Time 30),
-    Recipe [(ProductivityModule3, 1)]  [(AdvancedCircuit, 5), (ProductivityModule2, 5), (ProcessingUnit, 5)] Assembly ( Time 60),
-    Recipe [(SpeedModule3, 1)]  [(AdvancedCircuit, 5), (SpeedModule2, 5), (ProcessingUnit, 5)] Assembly ( Time 60),
-    Recipe [(EfficiencyModule3, 1)]  [(AdvancedCircuit, 5), (EfficiencyModule2, 5), (ProcessingUnit, 5)] Assembly ( Time 60),
-    Recipe [(ProcessingUnit, 1)]  [(AdvancedCircuit, 2), (ElectronicCircuit, 20), (SulfuricAcid, 10)] Assembly ( Time 10),
-    Recipe [(SulfuricAcid, 50)]  [(IronPlate, 1), (Sulfur, 5)] Chemical ( Time 1),
-    Recipe [(Sulfur, 2)]  [(PetroleumGas, 30)] Chemical ( Time 1),
-    Recipe [(ResearchCoalLiquefaction, 1/800)]  [(SciencePack1, 1), (SciencePack2, 1), (SciencePack3, 1), (SciencePackProduction, 1)] Lab ( Time 30),
-    Recipe [(ResearchNuclearPower, 1/4000)]  [(SciencePack1, 1), (SciencePack2, 1), (SciencePack3, 1)] Lab (Time 30),
-    Recipe [(Inserter, 1)]  [(ElectronicCircuit, 1), (IronPlate, 1), (GearWheel, 1)] Assembly ( Time 0.5),
-    Recipe [(TransportBelt, 2)]  [(GearWheel, 1), (IronPlate, 1)] Assembly ( Time 0.5),
-    Recipe [(AssemblingMachine1, 1)]  [(GearWheel, 5), (IronPlate, 9), (ElectronicCircuit, 3)] Assembly ( Time 0.5),
-    Recipe [(AssemblingMachine2, 1)]  [(AssemblingMachine1, 1), (ElectronicCircuit, 5), (GearWheel, 10), (IronPlate, 20)] Assembly ( Time 0.5),
-    Recipe [(AssemblingMachine3, 1)]  [(AssemblingMachine2, 2), (SpeedModule, 4)] Assembly ( Time 0.5),
-    Recipe [(ElectricFurnace, 1)]  [(AdvancedCircuit, 5), (SteelPlate, 10), (StoneBrick, 10)] Assembly ( Time 5),
-    Recipe [(ElectricEngineUnit, 1)]  [(ElectronicCircuit, 2), (EngineUnit, 1), (Lubricant, 15)] Assembly ( Time 10),
-    Recipe [(StoneBrick, 1)]  [(Stone, 2)] Smelter ( Time 3.5),
-    Recipe [(Stone, 1)]  [] Miner ( Time 0.65), -- incorrect components
-    Recipe [(Lubricant, 10)]  [(HeavyOil, 10)] Chemical (Time 1),
-    Recipe [(LaserTurret, 1)]  [(Battery, 12), (ElectronicCircuit, 20), (SteelPlate, 20)] Assembly (Time 20),
-    Recipe [(Battery, 1)] [(CopperPlate, 1), (IronPlate, 1), (SulfuricAcid, 40)] Assembly (Time 5),
-    Recipe [(SciencePackHighTech, 2)] [(Battery, 1), (CopperCable, 30), (ProcessingUnit, 3), (SpeedModule, 1)] Assembly (Time 14),
+    r GearWheel 1 [(IronPlate, 4)] Assembly (Time 0.5),
+    r IronPlate 1 [(IronOre, 1)] Smelter (Time 3.5),
+    r CopperPlate 1 [(CopperOre, 1)] Smelter (Time 3.5),
+    r SteelPlate 1 [(IronPlate, 10)] Smelter (Time 35),
+    r IronOre 1[(BuriedIron, 1)] Miner (Time (1/0.525)),
+    r CopperOre 1[(BuriedCopper, 1)] Miner (Time (1/0.525)),
+    r Coal 1 [(BuriedCoal, 1)] Miner ( Time (1/0.525)),
+    r Plastic 2[(PetroleumGas, 20), (Coal, 1)] Chemical (Time 1),
+    r ElectronicCircuit 1 [(CopperCable, 10), (IronPlate, 2)] Assembly ( Time 0.5),
+    r AdvancedCircuit 1 [(Plastic, 4), (CopperCable, 8), (ElectronicCircuit, 2)] Assembly ( Time 6),
+    r CopperCable 2 [(CopperPlate, 1)] Assembly ( Time 0.5),
+    r Pipe 1 [(IronPlate, 2)] Assembly ( Time 0.5),
+    r EngineUnit 1 [(GearWheel, 1), (Pipe, 2), (SteelPlate, 1)] Assembly ( Time 10),
+    r ElectricMiningDrill 1 [(GearWheel, 10), (IronPlate, 20), (ElectronicCircuit, 5)] Assembly ( Time 2),
+    r SciencePack3 1 [(AdvancedCircuit, 1), (ElectricMiningDrill, 1), (EngineUnit, 1)] Assembly ( Time 12),
+    r SciencePack1 1 [(CopperPlate, 1), (GearWheel, 1)] Assembly ( Time 5),
+    r SciencePack2 1 [(Inserter, 1), (TransportBelt, 1)] Assembly ( Time 6),
+    r SciencePackProduction 2 [(AssemblingMachine1, 1), (ElectricEngineUnit, 1), (ElectricFurnace, 1)] Assembly ( Time 14),
+    r PiercingRoundMagazine 1 [(FirearmRoundMagazine, 1), (SteelPlate, 1), (CopperPlate, 5)] Assembly (Time 3),
+    r FirearmRoundMagazine 1 [(IronPlate, 4)] Assembly (Time 1),
+    r Grenade 1 [(IronPlate, 5), (Coal, 10)] Assembly (Time 8),
+    r GunTurret 1[(GearWheel, 10), (CopperPlate, 10), (IronPlate, 20)] Assembly (Time 8),
+    r SciencePackMilitary 2 [(PiercingRoundMagazine, 1), (Grenade, 1), (GunTurret, 1)] Assembly (Time 10),
+    r SpeedModule 1 [(AdvancedCircuit, 5), (ElectronicCircuit, 5)] Assembly (Time 15),
+    r EfficiencyModule 1 [(AdvancedCircuit, 5), (ElectronicCircuit, 5)] Assembly ( Time 15),
+    r ProductivityModule 1 [(AdvancedCircuit, 5), (ElectronicCircuit, 5)] Assembly ( Time 15),
+    r EfficiencyModule2 1 [(AdvancedCircuit, 5), (EfficiencyModule, 4), (ProcessingUnit, 5)] Assembly ( Time 30),
+    r SpeedModule2 1 [(AdvancedCircuit, 5), (SpeedModule, 4), (ProcessingUnit, 5)] Assembly ( Time 30),
+    r ProductivityModule2 1 [(AdvancedCircuit, 5), (ProductivityModule, 4), (ProcessingUnit, 5)] Assembly ( Time 30),
+    r ProductivityModule3 1 [(AdvancedCircuit, 5), (ProductivityModule2, 5), (ProcessingUnit, 5)] Assembly ( Time 60),
+    r SpeedModule3 1 [(AdvancedCircuit, 5), (SpeedModule2, 5), (ProcessingUnit, 5)] Assembly ( Time 60),
+    r EfficiencyModule3 1 [(AdvancedCircuit, 5), (EfficiencyModule2, 5), (ProcessingUnit, 5)] Assembly ( Time 60),
+    r ProcessingUnit 1 [(AdvancedCircuit, 2), (ElectronicCircuit, 20), (SulfuricAcid, 10)] Assembly ( Time 10),
+    r SulfuricAcid 50 [(IronPlate, 1), (Sulfur, 5)] Chemical ( Time 1),
+    r Sulfur 2 [(PetroleumGas, 30)] Chemical ( Time 1),
+    r ResearchCoalLiquefaction (1/800) [(SciencePack1, 1), (SciencePack2, 1), (SciencePack3, 1), (SciencePackProduction, 1)] Lab ( Time 30),
+    r ResearchLaserTurretDamage5 (1/800)
+      [(SciencePack1, 1), (SciencePack2, 1), (SciencePack3, 1), (SciencePackProduction, 1), (SciencePackHighTech, 1)] Lab (Time 60),
+    r ResearchRocketSilo (1/4000)
+      [ (SciencePack1, 1)
+      , (SciencePack2, 1)
+      , (SciencePack3, 1)
+      , (SciencePackProduction, 1)
+      , (SciencePackHighTech, 1)
+      , (SciencePackMilitary, 1)] Lab (Time 60),
+    r Inserter 1 [(ElectronicCircuit, 1), (IronPlate, 1), (GearWheel, 1)] Assembly ( Time 0.5),
+    r TransportBelt 2 [(GearWheel, 1), (IronPlate, 1)] Assembly ( Time 0.5),
+    r AssemblingMachine1 1 [(GearWheel, 5), (IronPlate, 9), (ElectronicCircuit, 3)] Assembly ( Time 0.5),
+    r AssemblingMachine2 1 [(AssemblingMachine1, 1), (ElectronicCircuit, 5), (GearWheel, 10), (IronPlate, 20)] Assembly ( Time 0.5),
+    r AssemblingMachine3 1 [(AssemblingMachine2, 2), (SpeedModule, 4)] Assembly ( Time 0.5),
+    r ElectricFurnace 1 [(AdvancedCircuit, 5), (SteelPlate, 10), (StoneBrick, 10)] Assembly ( Time 5),
+    r ElectricEngineUnit 1 [(ElectronicCircuit, 2), (EngineUnit, 1), (Lubricant, 15)] Assembly ( Time 10),
+    r StoneBrick 1 [(Stone, 2)] Smelter ( Time 3.5),
+    r Stone 1 [] Miner ( Time 0.65), -- incorrect components
+    r Lubricant 10 [(HeavyOil, 10)] Chemical (Time 1),
+    r LaserTurret 1 [(Battery, 12), (ElectronicCircuit, 20), (SteelPlate, 20)] Assembly (Time 20),
+    r Battery 1[(CopperPlate, 1), (IronPlate, 1), (SulfuricAcid, 40)] Chemical (Time 5),
+    r SciencePackHighTech 2[(Battery, 1), (CopperCable, 30), (ProcessingUnit, 3), (SpeedModule, 1)] Assembly (Time 14),
     
-    Recipe [(Steam, (25e6 * 0.5) / energy_per_steam)] [(SolidFuel, 1)] Boiler (Time 1), -- incorrect time, but nothing cares
-    Recipe [(Steam, (8e6 * 0.5) / energy_per_steam)] [(Coal, 1)] Boiler (Time 1), -- incorrect time, but nothing cares
-    Recipe [(Energy, energy_per_steam)] [(Steam, 1)] Boiler (Time 1), -- incorrect time and venue, but nothing goes wrong
+    Recipe (BurnRecipe SolidFuel) [(Steam, (25e6 * 0.5) / energy_per_steam)] [(SolidFuel, 1)] Boiler (Time 1), -- incorrect time, but nothing cares
+--    Recipe (BurnRecipe Coal) [(Steam, (8e6 * 0.5) / energy_per_steam)] [(Coal, 1)] Boiler (Time 1), -- incorrect time, but nothing cares
+    r Energy energy_per_steam [{- (Steam, 1) -} ] Boiler (Time 1), -- incorrect time and venue, but nothing goes wrong
     
---    Recipe [(PetroleumGas, 2)] [(LightOil, 3)] Chemical (Time 5),
+    r PetroleumGas 2 [(LightOil, 3)] Chemical (Time 5),
     
-    Recipe [(SolidFuel, 1)] [(LightOil, 10)] Chemical (Time 3),
-    Recipe [(LightOil, 3)] [(HeavyOil, 4)] Chemical (Time 5),
-    Recipe [(HeavyOil, 35), (LightOil, 15), (PetroleumGas, 20)] [(Coal, 10), (HeavyOil, 25), (Steam, 50)] Refinery (Time 5) -- liquefaction
-  ]
+    r SolidFuel 1 [(LightOil, 10)] Chemical (Time 3),
+    r LightOil 3[(HeavyOil, 4)] Chemical (Time 5),
+    Recipe LiquefactionRecipe [(HeavyOil, 35), (LightOil, 15), (PetroleumGas, 20)] [(Coal, 10), (HeavyOil, 25), (Steam, 50)] Refinery (Time 5)
+  ] where
+  r product quantity ingredients venue time = Recipe (ProductRecipe product) [(product, quantity)] ingredients venue time
 
 mconcat' x = foldr add zero x
 
@@ -316,14 +342,16 @@ functionToMatrix :: (Num v, Ix' b, Ix' a) => (a -> [(b, v)]) -> Matrix a b v
 functionToMatrix f =
   Matrix (Array.array fullRange [ ((a, b), maybe 0 id (Map.lookup b bs)) | a <- range fullRange, let bs = Map.fromListWith (+) (f a), b <- range fullRange])
 
+recipesByName = Map.fromListWith (error "multiple recipes with the same name") (map (\recipe -> (recipeName recipe, recipe)) recipes)
+
 recipesToMatrix :: (Recipe -> Config) -> Map RecipeName (Map Product Rat)
-recipesToMatrix configs = Map.fromListWith (error "multiple recipes with the same name") $
-  map (\recipe@(Recipe production consumption venue (Time time)) ->
-         (recipeName recipe,
+recipesToMatrix configs = 
+  fmap (\recipe@(Recipe _recipeName production consumption venue (Time time)) ->
+         (
          let config = configs recipe in
            let energy = (time / (speedMultiplier config * baseSpeed venue)) * unPower (basePower venue) * energyMultiplier config in
              Map.fromListWith add (fmap (second negate) (consumption ++ [(Energy, energy)]) ++ map (second ((* productivityMultiplier config))) production)
-         )) recipes
+         )) recipesByName
 
 instance (Ix' a, Ix' b) => Enum (a, b) where
   fromEnum (x, (y :: b)) = fromEnum x * Array.rangeSize (fullRange :: (b, b)) + fromEnum y
@@ -520,19 +548,25 @@ usability' SolidFuel = Unusable
 usability' Energy = Usable
 usability' PetroleumGas = Unusable
 usability' ResearchCoalLiquefaction = Unusable
-usability' ResearchNuclearPower = Unusable
+usability' ResearchRocketSilo = Unusable
+usability' ResearchLaserTurretDamage5 = Unusable
 usability' LightOil = Unusable
 usability' HeavyOil = Unusable
 usability' Steam = Unusable
 usability' LaserTurret = Usable
 usability' Battery = Unusable
+usability' PiercingRoundMagazine = Usable
+usability' FirearmRoundMagazine = Usable
+usability' Grenade = Usable
+usability' GunTurret = Usable
+usability' SciencePackMilitary = Unusable
 usability' x = error $ "undefined usability: " ++ show x
 
 usability recipe =
   case recipeName recipe of
     ProductRecipe product -> usability' product
     LiquefactionRecipe -> Unusable
-    OtherRecipe _recipe -> error $ "undefined recipe usability: " ++ show recipe
+    BurnRecipe product -> Unusable
 
 evaluateTotalCost  :: RawMaterialPressure -> Rat
 evaluateTotalCost f = sum [ (estimate k * v) | (k, v) <- Map.toList f, v /= zero] where
@@ -541,6 +575,7 @@ evaluateTotalCost f = sum [ (estimate k * v) | (k, v) <- Map.toList f, v /= zero
   estimate BuriedCoal = 1.5
   estimate BuriedIron = 1
   estimate BuriedCopper = 1
+  estimate product = error $ "don't know how much this is worth: " ++ show product
 --  estimate PetroleumGas = 0.1
 
 subtract' a b = add a (minus b)
@@ -566,10 +601,10 @@ possibleSavings recipe = (`using` parList rdeepseq) $
             (fmap negate $ compute_recipe (\p -> if p == recipe then config else currentConfig p) recipe)
       in
         let execution_time_old =
-              time / speedMultiplier (currentConfig recipe)
+              time / (speedMultiplier (currentConfig recipe) * baseSpeed venue)
         in
         let execution_time =
-              time / speedMultiplier config
+              time / (speedMultiplier config * baseSpeed venue)
         in
           let
             modules_cost_per_execution_per_second_old =
@@ -622,7 +657,9 @@ partition_market l
   p predicate order = sortBy (comparing (order . extractGL)) $ filter (predicate . extractGL) l
   extractGL (_, _, gain, cost) = (gain, cost)
 
-possibleSavings' executions_per_second =
+allRecipeNames = [recipeName recipe | recipe <- recipes]
+
+possibleSavings' (Time totalTime) executions_per_second =
   [ (recipeName, (concatMap showModule modules), saving, cost + installationCost)
   | recipe <- recipes
   , recipeName <- return $ recipeName recipe
@@ -631,31 +668,60 @@ possibleSavings' executions_per_second =
               recipeImprovement_saving_per_execution,
               recipeImprovement_execution_time,
               recipeImprovement_cost_per_execution_per_second}) <- possibleSavings recipe
-  , let saving = evaluateTotalCost $ scale executions_per_second recipeImprovement_saving_per_execution
+  , let saving = (totalTime *) $ evaluateTotalCost $ scale executions_per_second recipeImprovement_saving_per_execution
   , let cost = evaluateTotalCost $ scale executions_per_second recipeImprovement_cost_per_execution_per_second
   ]
 
 installationCost = 1000
 
 desiredMaterials =
-  [ (LaserTurret, 200)
-  , (ResearchNuclearPower, 1)
+  [ (LaserTurret, 300)
+  , (ProductivityModule3, 200)
+  , (ResearchRocketSilo, 1)
   ]
 
 lookup0 m k = case Map.lookup k m of
   Nothing -> zero
   Just x -> x
 
+effectiveExecutionTime recipeName =
+  let recipe = (recipesByName Map.! recipeName) in
+  unTime (recipeTime recipe) / (speedMultiplier (currentConfig recipe) * baseSpeed (recipeVenue recipe))
+
+rCols =
+  [ ("Efficiency", (\(_, _, gain, cost) -> show (gain / cost)))
+  , ("Name", (\(name, _, _, _) -> show name))
+  , ("Mod", (\(_, mod, _, _) -> show mod))
+  , ("Gain", (\(_, _, gain, _) -> show gain))
+  , ("Cost", (\(_, _, _, cost) -> show cost))
+  ]
+
+pad n l = replicate (n - length l) ' ' ++ l
+
+printTable :: [[String]] -> [String]
+printTable =
+  map concat . transpose . map (\col -> let maxl = maximum (map length col) in map (pad (maxl + 1)) col) . transpose
+
+printTableG :: Ord a => [a] -> [(String, (a -> String))] -> IO ()
+printTableG l cols =
+  let title = map fst cols in
+  let showA row = map (($row) . snd) cols in
+  mapM_ putStrLn $ printTable (title : map showA l)
+
+printRs l = printTableG l rCols
+
 report =
+  let totalTime = Time (4500) in
+  let futureFactor = 3 in
   let
-   (total_cost, executions_per_second) =
+   (total_cost_per_second, executions_per_second) =
     foldr add zero (
       map
         (\(product, amount) ->
-           scale (1/7200) (currentSolvedRecipes Map.! product)
+            scale (recip $ unTime totalTime) (scale amount $ currentSolvedRecipes Map.! product)
             ) desiredMaterials)
   in
-  let savings = possibleSavings' (lookup0 executions_per_second) in
+  let savings = possibleSavings' (scale futureFactor totalTime) (lookup0 executions_per_second) in
   let
     negative_executions_per_second =
       filter
@@ -665,16 +731,28 @@ report =
    do
     let (free_money, buys, sells) = partition_market savings
     mapM_ print negative_executions_per_second
+    print "total factories:"
+    let factories k = flip fmap (Map.lookup k executions_per_second ) (* effectiveExecutionTime k)
+    printTableG (sortBy (comparing factories) allRecipeNames)
+      [ ("Name", show)
+      , ("Factories", maybe "<none>" show . factories)
+      , ("Price",
+          \k ->
+            case k of
+              ProductRecipe product ->
+                show $ evaluateTotalCost $ computeTotalCost product
+              _ -> "<complex>")
+      ]
     print "total cost"
-    print total_cost
+    print (scale (unTime totalTime) total_cost_per_second)
     print "iron plate execs/m"
     print (60 * executions_per_second Map.! ProductRecipe IronPlate)
     print "free money"
-    mapM_ print free_money
+    printRs free_money
     print "buys"
-    mapM_ print (take 20 buys)
+    printRs (take 20 buys)
     print "sells"
-    mapM_ print (take 20 sells)
+    printRs (take 20 sells)
     
 
 matrix_of_lists lists =
@@ -693,28 +771,38 @@ s1 = SpeedModule
 s2 = SpeedModule2
 e1 = EfficiencyModule
 p = AssemblingMachine3
-currentModules' SciencePackProduction = [p1, p1, p1, p1]
-currentModules' SciencePack3 = [p1, p1, p1, p1]
+
+-- todo:
+currentModules' EngineUnit = [p, s1, p1, p1, p1]
+currentModules' Sulfur = [p2, p2, p2]
+
+currentModules' ResearchRocketSilo = [p2, p2]
+currentModules' SulfuricAcid = [p3, p3, p3]
+currentModules' ProcessingUnit = [p, p3, p3, p3, s2]
+currentModules' ElectricEngineUnit = [p, s1, p1, p1, p1]
+currentModules' CopperCable = [p, s1, p1, p1, p1]
+currentModules' SciencePackMilitary = [p, s1, p2, p2, p2]
+currentModules' SciencePackProduction = [p, s2, p3, p3, p3]
+currentModules' SciencePackHighTech = [p, s2, p3, p3, p3]
+currentModules' SciencePack3 = [p, p2, p2, p2, s1]
 currentModules' ElectronicCircuit = [p, s1, p2, p2, p2]
 currentModules' GearWheel = [p, p2, p2, p2, s1]
 currentModules' ResearchCoalLiquefaction = [p1, p1]
-currentModules' ResearchNuclearPower = [p1, p1]
-currentModules' ElectricEngineUnit = [e1, e1]
+currentModules' ResearchLaserTurretDamage5 = [p1, p1]
 currentModules' AdvancedCircuit = [p, p1, p1, p1, s1]
-currentModules' Plastic = [p1, p1, p1]
+currentModules' Plastic = [p2, p2, p2]
 currentModules' SciencePack2 = [p1]
-currentModules' SulfuricAcid = [s1, p2, p2]
 currentModules' IronPlate = [e1, e1]
 currentModules' CopperPlate = [e1, e1]
 currentModules' SteelPlate = [e1, e1]
-currentModules' ProcessingUnit = [p, p2, p2, p2, s1] -- actually one of these is p2
-currentModules' Sulfur = [p1, p1, p1]
+currentModules' Battery = [p2, p2, p2]
+
 currentModules' _ = []
 
 currentModules recipe =
   case recipeName recipe of
     ProductRecipe product -> currentModules' product
-    LiquefactionRecipe -> [p1, p1, s1]
+    LiquefactionRecipe -> [p1, p1, e1]
     _ -> []  
 
 main = report
