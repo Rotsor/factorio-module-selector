@@ -85,6 +85,7 @@ data Product =
   | ResearchCoalLiquefaction
   | ResearchLaserTurretDamage5
   | ResearchRocketSilo
+  | ResearchNuclearPower
   | Inserter
   | TransportBelt
   | AssemblingMachine1
@@ -273,34 +274,35 @@ recipes =
     r CopperOre 1[(BuriedCopper, 1)] Miner (Time (1/0.525)),
     r Coal 1 [(BuriedCoal, 1)] Miner ( Time (1/0.525)),
     r Plastic 2[(PetroleumGas, 20), (Coal, 1)] Chemical (Time 1),
-    r ElectronicCircuit 1 [(CopperCable, 10), (IronPlate, 2)] Assembly ( Time 0.5),
-    r AdvancedCircuit 1 [(Plastic, 4), (CopperCable, 8), (ElectronicCircuit, 2)] Assembly ( Time 6),
-    r CopperCable 2 [(CopperPlate, 1)] Assembly ( Time 0.5),
-    r Pipe 1 [(IronPlate, 2)] Assembly ( Time 0.5),
-    r EngineUnit 1 [(GearWheel, 1), (Pipe, 2), (SteelPlate, 1)] Assembly ( Time 10),
-    r ElectricMiningDrill 1 [(GearWheel, 10), (IronPlate, 20), (ElectronicCircuit, 5)] Assembly ( Time 2),
-    r SciencePack3 1 [(AdvancedCircuit, 1), (ElectricMiningDrill, 1), (EngineUnit, 1)] Assembly ( Time 12),
-    r SciencePack1 1 [(CopperPlate, 1), (GearWheel, 1)] Assembly ( Time 5),
-    r SciencePack2 1 [(Inserter, 1), (TransportBelt, 1)] Assembly ( Time 6),
-    r SciencePackProduction 2 [(AssemblingMachine1, 1), (ElectricEngineUnit, 1), (ElectricFurnace, 1)] Assembly ( Time 14),
+    r ElectronicCircuit 1 [(CopperCable, 10), (IronPlate, 2)] Assembly (Time 0.5),
+    r AdvancedCircuit 1 [(Plastic, 4), (CopperCable, 8), (ElectronicCircuit, 2)] Assembly (Time 6),
+    r CopperCable 2 [(CopperPlate, 1)] Assembly (Time 0.5),
+    r Pipe 1 [(IronPlate, 2)] Assembly (Time 0.5),
+    r EngineUnit 1 [(GearWheel, 1), (Pipe, 2), (SteelPlate, 1)] Assembly (Time 10),
+    r ElectricMiningDrill 1 [(GearWheel, 10), (IronPlate, 20), (ElectronicCircuit, 5)] Assembly (Time 2),
+    r SciencePack3 1 [(AdvancedCircuit, 1), (ElectricMiningDrill, 1), (EngineUnit, 1)] Assembly (Time 12),
+    r SciencePack1 1 [(CopperPlate, 1), (GearWheel, 1)] Assembly (Time 5),
+    r SciencePack2 1 [(Inserter, 1), (TransportBelt, 1)] Assembly (Time 6),
+    r SciencePackProduction 2 [(ElectricEngineUnit, 1), (ElectricFurnace, 1)] Assembly (Time 14),
     r PiercingRoundMagazine 1 [(FirearmRoundMagazine, 1), (SteelPlate, 1), (CopperPlate, 5)] Assembly (Time 3),
     r FirearmRoundMagazine 1 [(IronPlate, 4)] Assembly (Time 1),
     r Grenade 1 [(IronPlate, 5), (Coal, 10)] Assembly (Time 8),
     r GunTurret 1[(GearWheel, 10), (CopperPlate, 10), (IronPlate, 20)] Assembly (Time 8),
     r SciencePackMilitary 2 [(PiercingRoundMagazine, 1), (Grenade, 1), (GunTurret, 1)] Assembly (Time 10),
     r SpeedModule 1 [(AdvancedCircuit, 5), (ElectronicCircuit, 5)] Assembly (Time 15),
-    r EfficiencyModule 1 [(AdvancedCircuit, 5), (ElectronicCircuit, 5)] Assembly ( Time 15),
-    r ProductivityModule 1 [(AdvancedCircuit, 5), (ElectronicCircuit, 5)] Assembly ( Time 15),
-    r EfficiencyModule2 1 [(AdvancedCircuit, 5), (EfficiencyModule, 4), (ProcessingUnit, 5)] Assembly ( Time 30),
-    r SpeedModule2 1 [(AdvancedCircuit, 5), (SpeedModule, 4), (ProcessingUnit, 5)] Assembly ( Time 30),
-    r ProductivityModule2 1 [(AdvancedCircuit, 5), (ProductivityModule, 4), (ProcessingUnit, 5)] Assembly ( Time 30),
-    r ProductivityModule3 1 [(AdvancedCircuit, 5), (ProductivityModule2, 5), (ProcessingUnit, 5)] Assembly ( Time 60),
-    r SpeedModule3 1 [(AdvancedCircuit, 5), (SpeedModule2, 5), (ProcessingUnit, 5)] Assembly ( Time 60),
-    r EfficiencyModule3 1 [(AdvancedCircuit, 5), (EfficiencyModule2, 5), (ProcessingUnit, 5)] Assembly ( Time 60),
-    r ProcessingUnit 1 [(AdvancedCircuit, 2), (ElectronicCircuit, 20), (SulfuricAcid, 10)] Assembly ( Time 10),
-    r SulfuricAcid 50 [(IronPlate, 1), (Sulfur, 5)] Chemical ( Time 1),
-    r Sulfur 2 [(PetroleumGas, 30)] Chemical ( Time 1),
-    r ResearchCoalLiquefaction (1/800) [(SciencePack1, 1), (SciencePack2, 1), (SciencePack3, 1), (SciencePackProduction, 1)] Lab ( Time 30),
+    r EfficiencyModule 1 [(AdvancedCircuit, 5), (ElectronicCircuit, 5)] Assembly (Time 15),
+    r ProductivityModule 1 [(AdvancedCircuit, 5), (ElectronicCircuit, 5)] Assembly (Time 15),
+    r EfficiencyModule2 1 [(AdvancedCircuit, 5), (EfficiencyModule, 4), (ProcessingUnit, 5)] Assembly (Time 30),
+    r SpeedModule2 1 [(AdvancedCircuit, 5), (SpeedModule, 4), (ProcessingUnit, 5)] Assembly (Time 30),
+    r ProductivityModule2 1 [(AdvancedCircuit, 5), (ProductivityModule, 4), (ProcessingUnit, 5)] Assembly (Time 30),
+    r ProductivityModule3 1 [(AdvancedCircuit, 5), (ProductivityModule2, 5), (ProcessingUnit, 5)] Assembly (Time 60),
+    r SpeedModule3 1 [(AdvancedCircuit, 5), (SpeedModule2, 5), (ProcessingUnit, 5)] Assembly (Time 60),
+    r EfficiencyModule3 1 [(AdvancedCircuit, 5), (EfficiencyModule2, 5), (ProcessingUnit, 5)] Assembly (Time 60),
+    r ProcessingUnit 1 [(AdvancedCircuit, 2), (ElectronicCircuit, 20), (SulfuricAcid, 10)] Assembly (Time 10),
+    r SulfuricAcid 50 [(IronPlate, 1), (Sulfur, 5)] Chemical (Time 1),
+    r Sulfur 2 [(PetroleumGas, 30)] Chemical (Time 1),
+    r ResearchCoalLiquefaction (1/800) [(SciencePack1, 1), (SciencePack2, 1), (SciencePack3, 1), (SciencePackProduction, 1)] Lab (Time 30),
+    r ResearchNuclearPower (1/4000) [(SciencePack1, 1), (SciencePack2, 1), (SciencePack3, 1)] Lab (Time 30),
     r ResearchLaserTurretDamage5 (1/800)
       [(SciencePack1, 1), (SciencePack2, 1), (SciencePack3, 1), (SciencePackProduction, 1), (SciencePackHighTech, 1)] Lab (Time 60),
     r ResearchRocketSilo (1/4000)
@@ -310,15 +312,15 @@ recipes =
       , (SciencePackProduction, 1)
       , (SciencePackHighTech, 1)
       , (SciencePackMilitary, 1)] Lab (Time 60),
-    r Inserter 1 [(ElectronicCircuit, 1), (IronPlate, 1), (GearWheel, 1)] Assembly ( Time 0.5),
-    r TransportBelt 2 [(GearWheel, 1), (IronPlate, 1)] Assembly ( Time 0.5),
-    r AssemblingMachine1 1 [(GearWheel, 5), (IronPlate, 9), (ElectronicCircuit, 3)] Assembly ( Time 0.5),
-    r AssemblingMachine2 1 [(AssemblingMachine1, 1), (ElectronicCircuit, 5), (GearWheel, 10), (IronPlate, 20)] Assembly ( Time 0.5),
-    r AssemblingMachine3 1 [(AssemblingMachine2, 2), (SpeedModule, 4)] Assembly ( Time 0.5),
-    r ElectricFurnace 1 [(AdvancedCircuit, 5), (SteelPlate, 10), (StoneBrick, 10)] Assembly ( Time 5),
-    r ElectricEngineUnit 1 [(ElectronicCircuit, 2), (EngineUnit, 1), (Lubricant, 15)] Assembly ( Time 10),
-    r StoneBrick 1 [(Stone, 2)] Smelter ( Time 3.5),
-    r Stone 1 [] Miner ( Time 0.65), -- incorrect components
+    r Inserter 1 [(ElectronicCircuit, 1), (IronPlate, 1), (GearWheel, 1)] Assembly (Time 0.5),
+    r TransportBelt 2 [(GearWheel, 1), (IronPlate, 1)] Assembly (Time 0.5),
+    r AssemblingMachine1 1 [(GearWheel, 5), (IronPlate, 9), (ElectronicCircuit, 3)] Assembly (Time 0.5),
+    r AssemblingMachine2 1 [(AssemblingMachine1, 1), (ElectronicCircuit, 5), (GearWheel, 10), (IronPlate, 20)] Assembly (Time 0.5),
+    r AssemblingMachine3 1 [(AssemblingMachine2, 2), (SpeedModule, 4)] Assembly (Time 0.5),
+    r ElectricFurnace 1 [(AdvancedCircuit, 5), (SteelPlate, 10), (StoneBrick, 10)] Assembly (Time 5),
+    r ElectricEngineUnit 1 [(ElectronicCircuit, 2), (EngineUnit, 1), (Lubricant, 15)] Assembly (Time 10),
+    r StoneBrick 1 [(Stone, 2)] Smelter (Time 3.5),
+    r Stone 1 [] Miner (Time 0.65), -- incorrect components
     r Lubricant 10 [(HeavyOil, 10)] Chemical (Time 1),
     r LaserTurret 1 [(Battery, 12), (ElectronicCircuit, 20), (SteelPlate, 20)] Assembly (Time 20),
     r Battery 1[(CopperPlate, 1), (IronPlate, 1), (SulfuricAcid, 40)] Chemical (Time 5),
@@ -549,6 +551,7 @@ usability' Energy = Usable
 usability' PetroleumGas = Unusable
 usability' ResearchCoalLiquefaction = Unusable
 usability' ResearchRocketSilo = Unusable
+usability' ResearchNuclearPower = Unusable
 usability' ResearchLaserTurretDamage5 = Unusable
 usability' LightOil = Unusable
 usability' HeavyOil = Unusable
@@ -675,9 +678,8 @@ possibleSavings' (Time totalTime) executions_per_second =
 installationCost = 1000
 
 desiredMaterials =
-  [ (LaserTurret, 300)
-  , (ProductivityModule3, 200)
-  , (ResearchRocketSilo, 1)
+  [ (ResearchNuclearPower,  1)
+  , (PiercingRoundMagazine, 10000)
   ]
 
 lookup0 m k = case Map.lookup k m of
@@ -773,7 +775,7 @@ e1 = EfficiencyModule
 p = AssemblingMachine3
 
 -- todo:
-currentModules' EngineUnit = [p, s1, p1, p1, p1]
+{-currentModules' EngineUnit = [p, s1, p1, p1, p1]
 currentModules' Sulfur = [p2, p2, p2]
 
 currentModules' ResearchRocketSilo = [p2, p2]
@@ -795,14 +797,14 @@ currentModules' SciencePack2 = [p1]
 currentModules' IronPlate = [e1, e1]
 currentModules' CopperPlate = [e1, e1]
 currentModules' SteelPlate = [e1, e1]
-currentModules' Battery = [p2, p2, p2]
+currentModules' Battery = [p2, p2, p2] -}
 
 currentModules' _ = []
 
 currentModules recipe =
   case recipeName recipe of
     ProductRecipe product -> currentModules' product
-    LiquefactionRecipe -> [p1, p1, e1]
+    LiquefactionRecipe -> []
     _ -> []  
 
 main = report
