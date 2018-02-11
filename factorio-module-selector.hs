@@ -35,10 +35,12 @@ import Matrix
 data RawMaterial =
   BuriedIronRaw
   | BuriedCopperRaw
-  | PetroleumGasRaw
-  | LightOilRaw
-  | HeavyOilRaw
+--  | PetroleumGasRaw
+--  | LightOilRaw
+--  | HeavyOilRaw
+  | CrudeOilRaw
   | BuriedCoalRaw
+  | PollutionRaw
   deriving (Eq, Ord, Enum, Bounded, Show, Ix, Generic)
 
 instance NFData RawMaterial
@@ -99,7 +101,8 @@ data Product =
   | LaserTurret
   | Battery
   
-  | Energy -- in J
+  | ElectricalEnergy -- in J
+  | ChemicalEnergy -- in J
   | SolidFuel
   | Steam
   | Coal
@@ -108,7 +111,9 @@ data Product =
   | PetroleumGas
   | LightOil
   | HeavyOil
+  | CrudeOil
   | BuriedCoal
+  | Pollution
   deriving (Eq, Ord, Show, Enum, Bounded, Ix, Generic)
 
 instance NFData Product where
@@ -131,7 +136,9 @@ data FactoryKind =
   | Miner
   | Lab
   | Boiler
+  | SteamEngine
   | Refinery
+  | NoVenue
   deriving (Show, Eq, Ord)
 
 data Config = Config
@@ -139,41 +146,48 @@ data Config = Config
     configSpeedBonus :: Rat,
     configProductivityBonus :: Rat,
     configEnergyBonus :: Rat,
+    configPollutionBonus :: Rat,
     configSpeedPreMultiplier :: Rat,
-    configEnergyPreMultiplier :: Rat
+    configEnergyPreMultiplier :: Rat,
+    configPollutionPreMultiplier :: Rat
   } deriving Show
 
 speedMultiplier x = configSpeedPreMultiplier x * (1 + configSpeedBonus x)
 productivityMultiplier x = 1 + configProductivityBonus x
 energyMultiplier x = configEnergyPreMultiplier x * max 0.2 (1 + configEnergyBonus x)
+pollutionMultiplier x = configPollutionPreMultiplier x * (1 + configPollutionBonus x)
 
 instance Monoid Config where
-  mempty = Config 0 0 0 1 1
+  mempty = Config 0 0 0 0 1 1 1
   a `mappend` b =
     Config
-    (configSpeedBonus a + configSpeedBonus b)
-    (configProductivityBonus a + configProductivityBonus b)
-    (configEnergyBonus a + configEnergyBonus b)
-    (configSpeedPreMultiplier a * configSpeedPreMultiplier b)
-    (configEnergyPreMultiplier a * configEnergyPreMultiplier b)
+      { 
+        configSpeedBonus = (configSpeedBonus a + configSpeedBonus b),
+        configProductivityBonus = (configProductivityBonus a + configProductivityBonus b),
+        configEnergyBonus = (configEnergyBonus a + configEnergyBonus b),
+        configPollutionBonus = (configPollutionBonus a + configPollutionBonus b),
+        configSpeedPreMultiplier = (configSpeedPreMultiplier a * configSpeedPreMultiplier b),
+        configEnergyPreMultiplier = (configEnergyPreMultiplier a * configEnergyPreMultiplier b),
+        configPollutionPreMultiplier = (configPollutionPreMultiplier a * configPollutionPreMultiplier b)
+      }
 
 data Usability =
   Unusable | Usable
 
-moduleToConfig SpeedModule = Config 0.2 0 0.5 1 1
-moduleToConfig SpeedModule2 = Config 0.3 0 0.6 1 1
-moduleToConfig SpeedModule3 = Config 0.5 0 0.7 1 1
-moduleToConfig EfficiencyModule = Config 0 0 (negate 0.3) 1 1
-moduleToConfig EfficiencyModule2 = Config 0 0 (negate 0.4) 1 1
-moduleToConfig EfficiencyModule3 = Config 0 0 (negate 0.5) 1 1
-moduleToConfig ProductivityModule = Config (negate 0.15) 0.04 0.4 1 1
-moduleToConfig ProductivityModule2 = Config (negate 0.15) 0.06 0.6 1 1
-moduleToConfig ProductivityModule3 = Config (negate 0.15) 0.10 0.8 1 1
-moduleToConfig AssemblingMachine3 = Config 0 0 0 (1.25/0.75) (210/150)
+moduleToConfig SpeedModule = Config 0.2 0 0.5 0 1 1 1
+moduleToConfig SpeedModule2 = Config 0.3 0 0.6 0 1 1 1
+moduleToConfig SpeedModule3 = Config 0.5 0 0.7 0 1 1 1
+moduleToConfig EfficiencyModule = Config 0 0 (negate 0.3) 0 1 1 1
+moduleToConfig EfficiencyModule2 = Config 0 0 (negate 0.4) 0 1 1 1
+moduleToConfig EfficiencyModule3 = Config 0 0 (negate 0.5) 0 1 1 1
+moduleToConfig ProductivityModule = Config (negate 0.15) 0.04 0.4 0 1 1 1
+moduleToConfig ProductivityModule2 = Config (negate 0.15) 0.06 0.6 0 1 1 1
+moduleToConfig ProductivityModule3 = Config (negate 0.15) 0.10 0.8 0 1 1 1
+moduleToConfig AssemblingMachine3 = Config 0 0 0 0 (1.25/0.75) (210/150) ((1.8/210)/(2.4/150))
 
 allModules :: Usability -> [([Product], Config)]
 allModules usability =
-  [ ([], Config 0 0 0 1 1) ] ++
+  [ ([], mempty) ] ++
   (map (\m -> ([m], moduleToConfig m)) $
   ([ SpeedModule
   , EfficiencyModule
@@ -209,20 +223,37 @@ availableConfigs kind usability =
     Miner -> choose 3 availableModules
     Lab -> choose 2 availableModules
     Boiler -> choose 0 availableModules
+    SteamEngine -> choose 0 availableModules
     Refinery -> choose 3 availableModules
+    NoVenue -> choose 0 availableModules
 
 -- in Watt
-data Power = Power { unPower :: Rat }
+data Power =
+  ElectricalPower { unPower :: Rat }
+  | ChemicalPower Rat
+
+baseBoilerPower = 3.6e6
 
 basePower :: FactoryKind -> Power
-basePower Assembly = Power 150e3
-basePower Miner = Power 90e3
-basePower Smelter = Power 180e3
-basePower Chemical = Power 210e3
-basePower Lab = Power 60e3
-basePower Boiler = Power 0
-basePower Refinery = Power 420e3
+basePower Assembly = ElectricalPower 150e3
+basePower Miner = ElectricalPower 90e3
+basePower Smelter = ElectricalPower 180e3
+basePower Chemical = ElectricalPower 210e3
+basePower Lab = ElectricalPower 60e3
+basePower Boiler = ChemicalPower baseBoilerPower
+basePower SteamEngine = ElectricalPower 0
+basePower Refinery = ElectricalPower 420e3
+basePower NoVenue = ElectricalPower 0
 
+basePollution Assembly = 2.4
+basePollution Miner = 9
+basePollution Smelter = 0.9
+basePollution Chemical = 1.8
+basePollution Lab = 0
+basePollution Boiler = 27.6923
+basePollution Refinery = 3.6
+basePollution SteamEngine = 0
+basePollution NoVenue = 0
 
 labUpgrades = 1.5 -- +20% +30%
 
@@ -230,9 +261,11 @@ baseSpeed Assembly = 0.75 -- blue by default, upgraded with a pseudomodule
 baseSpeed Miner = 1 -- factored in into the recipe -- CR-someday: take productivity upgrades into account
 baseSpeed Smelter = 2
 baseSpeed Chemical = 1.25
-baseSpeed Lab = labUpgrades -- CR-someday: take upgrades into account
-baseSpeed Boiler = 1 -- this is wrong; the only thing that depends on this is the thing that reports the number of boilers
+baseSpeed Lab = labUpgrades
+baseSpeed Boiler = 1 -- this is factored into the recipe
+baseSpeed SteamEngine = 1 -- this is factored into the recipe
 baseSpeed Refinery = 1
+baseSpeed NoVenue = 1 -- this is meaningless
 
 currentConfig :: Recipe -> Config
 currentConfig = mconcat . map moduleToConfig . currentModules
@@ -253,13 +286,17 @@ data Recipe = Recipe
 data RecipeName =
   ProductRecipe Product
   | LiquefactionRecipe
-  | BurnRecipe Product
+  | AdvancedOilProcessing
+  | BoilerRecipe
+  | UseAsFuelRecipe Product
   deriving (Eq, Ord)
 
 instance Show RecipeName where
   show (ProductRecipe product) = show product
   show (LiquefactionRecipe) = "Liquefaction"
-  show (BurnRecipe product) = "Burn" ++ show product
+  show (AdvancedOilProcessing) = "AdvancedOilProcessing"
+  show BoilerRecipe = "BoilerRecipe"
+  show (UseAsFuelRecipe product) = "UseAsFuel" ++ show product
 
 energy_per_steam = 30000
 
@@ -326,15 +363,17 @@ recipes =
     r Battery 1[(CopperPlate, 1), (IronPlate, 1), (SulfuricAcid, 40)] Chemical (Time 5),
     r SciencePackHighTech 2[(Battery, 1), (CopperCable, 30), (ProcessingUnit, 3), (SpeedModule, 1)] Assembly (Time 14),
     
-    Recipe (BurnRecipe SolidFuel) [(Steam, (25e6 * 0.5) / energy_per_steam)] [(SolidFuel, 1)] Boiler (Time 1), -- incorrect time, but nothing cares
---    Recipe (BurnRecipe Coal) [(Steam, (8e6 * 0.5) / energy_per_steam)] [(Coal, 1)] Boiler (Time 1), -- incorrect time, but nothing cares
-    r Energy energy_per_steam [{- (Steam, 1) -} ] Boiler (Time 1), -- incorrect time and venue, but nothing goes wrong
+    Recipe BoilerRecipe [(Steam, (baseBoilerPower * 0.5) / energy_per_steam)] [] Boiler (Time 1),
+--    Recipe (UseAsFuelRecipe SolidFuel) [(Steam, (25e6 * 0.5) / energy_per_steam)] [(SolidFuel, 1)] Boiler (Time 1), -- incorrect time, but nothing cares
+    Recipe (UseAsFuelRecipe Coal) [(ChemicalEnergy, 8e6)] [(Coal, 1)] NoVenue (Time 1), -- time is meaningless here
+    r ElectricalEnergy 1 [(Steam, 1/energy_per_steam)] SteamEngine (Time (1/900e3)),
     
     r PetroleumGas 2 [(LightOil, 3)] Chemical (Time 5),
     
     r SolidFuel 1 [(LightOil, 10)] Chemical (Time 3),
     r LightOil 3[(HeavyOil, 4)] Chemical (Time 5),
-    Recipe LiquefactionRecipe [(HeavyOil, 35), (LightOil, 15), (PetroleumGas, 20)] [(Coal, 10), (HeavyOil, 25), (Steam, 50)] Refinery (Time 5)
+    Recipe AdvancedOilProcessing [(HeavyOil, 10), (LightOil, 45), (PetroleumGas, 55)] [(CrudeOil, 100)] Refinery (Time 5)
+--    Recipe LiquefactionRecipe [(HeavyOil, 35), (LightOil, 15), (PetroleumGas, 20)] [(Coal, 10), (HeavyOil, 25), (Steam, 50)] Refinery (Time 5)
   ] where
   r product quantity ingredients venue time = Recipe (ProductRecipe product) [(product, quantity)] ingredients venue time
 
@@ -351,8 +390,17 @@ recipesToMatrix configs =
   fmap (\recipe@(Recipe _recipeName production consumption venue (Time time)) ->
          (
          let config = configs recipe in
-           let energy = (time / (speedMultiplier config * baseSpeed venue)) * unPower (basePower venue) * energyMultiplier config in
-             Map.fromListWith add (fmap (second negate) (consumption ++ [(Energy, energy)]) ++ map (second ((* productivityMultiplier config))) production)
+           let
+             energy_and_pollution =
+               let multiplier = (time / (speedMultiplier config * baseSpeed venue)) * energyMultiplier config in
+               let pollution = basePollution venue in
+               case basePower venue of
+                 ElectricalPower basePower ->
+                   [(ElectricalEnergy, basePower * multiplier), (Pollution, pollution * multiplier)]
+                 ChemicalPower basePower ->
+                   [(ChemicalEnergy, basePower * multiplier), (Pollution, pollution * multiplier)]
+           in
+             Map.fromListWith add (fmap (second negate) (consumption ++ energy_and_pollution) ++ map (second ((* productivityMultiplier config))) production)
          )) recipesByName
 
 instance (Ix' a, Ix' b) => Enum (a, b) where
@@ -468,6 +516,7 @@ solvedRecipes configs =
   find_kernel_with_trace (/) (*) (recipesToMatrix configs)
 
 currentSolvedRecipes = solvedRecipes currentConfig
+currentRecipeMatrix = recipesToMatrix currentConfig
 
 vector_lookup :: Ix' a => Vector a v -> a -> v
 vector_lookup (Matrix x) a = x ! (a, ())
@@ -547,7 +596,7 @@ usability' ProductivityModule = Usable
 usability' ProductivityModule2 = Usable
 usability' ProductivityModule3 = Usable
 usability' SolidFuel = Unusable
-usability' Energy = Usable
+usability' ElectricalEnergy = Usable
 usability' PetroleumGas = Unusable
 usability' ResearchCoalLiquefaction = Unusable
 usability' ResearchRocketSilo = Unusable
@@ -555,6 +604,7 @@ usability' ResearchNuclearPower = Unusable
 usability' ResearchLaserTurretDamage5 = Unusable
 usability' LightOil = Unusable
 usability' HeavyOil = Unusable
+usability' CrudeOil = Unusable
 usability' Steam = Unusable
 usability' LaserTurret = Usable
 usability' Battery = Unusable
@@ -569,15 +619,18 @@ usability recipe =
   case recipeName recipe of
     ProductRecipe product -> usability' product
     LiquefactionRecipe -> Unusable
-    BurnRecipe product -> Unusable
+    AdvancedOilProcessing -> Unusable
+    UseAsFuelRecipe product -> Unusable
 
 evaluateTotalCost  :: RawMaterialPressure -> Rat
 evaluateTotalCost f = sum [ (estimate k * v) | (k, v) <- Map.toList f, v /= zero] where
 --  estimate LightOil = 0.1
---  estimate HeavyOil = 0.1
+  estimate CrudeOil = 0.1
+  estimate HeavyOil = 0.1
   estimate BuriedCoal = 1.5
   estimate BuriedIron = 1
   estimate BuriedCopper = 1
+  estimate Pollution = 0.1
   estimate product = error $ "don't know how much this is worth: " ++ show product
 --  estimate PetroleumGas = 0.1
 
@@ -634,7 +687,7 @@ instance VectorSpace Rat where
   scale (Rat x) (Rat y) = Rat (x * y)
 
 instance Show Rat where
-  show (Rat x) = printf "%.5f" (fromRational x :: Double)
+  show (Rat x) = printf "%.4f" (fromRational x :: Double)
 
 showModule SpeedModule = "s1"
 showModule SpeedModule2 = "s2"
@@ -680,6 +733,10 @@ installationCost = 1000
 desiredMaterials =
   [ (ResearchNuclearPower,  1)
   , (PiercingRoundMagazine, 10000)
+  , (ProductivityModule2, 200)
+  , (SciencePackProduction, 1000)
+  , (SciencePackHighTech, 500)
+  , (SciencePackMilitary, 500)
   ]
 
 lookup0 m k = case Map.lookup k m of
@@ -712,6 +769,8 @@ printTableG l cols =
 
 printRs l = printTableG l rCols
 
+interestingProducts = [Coal, ElectricalEnergy, ChemicalEnergy]
+
 report =
   let totalTime = Time (4500) in
   let futureFactor = 3 in
@@ -735,7 +794,7 @@ report =
     mapM_ print negative_executions_per_second
     print "total factories:"
     let factories k = flip fmap (Map.lookup k executions_per_second ) (* effectiveExecutionTime k)
-    printTableG (sortBy (comparing factories) allRecipeNames)
+    printTableG (sortBy (comparing factories) allRecipeNames) $
       [ ("Name", show)
       , ("Factories", maybe "<none>" show . factories)
       , ("Price",
@@ -744,13 +803,13 @@ report =
               ProductRecipe product ->
                 show $ evaluateTotalCost $ computeTotalCost product
               _ -> "<complex>")
-      ]
+      ] ++ flip map interestingProducts (\product -> (show product, (\k -> show $ lookup0 (currentRecipeMatrix Map.! k) product * (lookup0 executions_per_second k))))
     print "total cost"
     print (scale (unTime totalTime) total_cost_per_second)
     print "iron plate execs/m"
     print (60 * executions_per_second Map.! ProductRecipe IronPlate)
     print "free money"
-    printRs free_money
+    printRs (take 20 free_money)
     print "buys"
     printRs (take 20 buys)
     print "sells"
@@ -799,14 +858,23 @@ currentModules' CopperPlate = [e1, e1]
 currentModules' SteelPlate = [e1, e1]
 currentModules' Battery = [p2, p2, p2] -}
 
+currentModules' ProcessingUnit = [p, s1, p2, p2, p2]
+currentModules' GearWheel = [p1, p1]
+currentModules' ElectronicCircuit = [p, p2, p2, p1, s1]
+currentModules' SciencePack3 = [p, p2, p2, p1, s1]
+currentModules' SciencePackHighTech = [p, p2, p2, p1, s1]
+currentModules' SciencePackProduction = [p, p2, p2, p1, s1]
+currentModules' ResearchNuclearPower = [p1, p1]
 currentModules' _ = []
 
 currentModules recipe =
   case recipeName recipe of
     ProductRecipe product -> currentModules' product
     LiquefactionRecipe -> []
+    AdvancedOilProcessing -> []
     _ -> []  
 
+--main = print $ computeTotalCost SciencePack3
 main = report
 --main =
 --  print $ solvedRecipes currentConfig Map.! SulfuricAcid

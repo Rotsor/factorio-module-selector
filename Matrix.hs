@@ -64,8 +64,8 @@ type Solution b v = Map b (Map b v)
 
 type Solution_with_trace a b v =
   -- decomposes as much products as it can, providing for each product:
-  -- 2. how much of non-decomposable products that uses
-  -- 1. how much of input recipes ([a]) went into it and
+  -- 1. how much of non-decomposable products are necessary
+  -- 2. how much of input recipes ([a]) you need to craft
   Map b (Map b v, Map a v)
 
 class Linear a where
