@@ -872,7 +872,7 @@ currentModules recipe =
     ProductRecipe product -> currentModules' product
     LiquefactionRecipe -> []
     AdvancedOilProcessing -> []
-    _ -> []  
+    _ -> []
 
 --main = print $ computeTotalCost SciencePack3
 main = report
