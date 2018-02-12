@@ -14,6 +14,7 @@ import Data.Map(Map)
 import qualified Data.Set as Set
 import Control.Arrow(first, second, (&&&))
 import Data.List
+import Data.Maybe
 import Debug.Trace
 import Data.Ord
 import Text.Printf
@@ -35,6 +36,7 @@ import Matrix
 data RawMaterial =
   BuriedIronRaw
   | BuriedCopperRaw
+  | BuriedStoneRaw
 --  | PetroleumGasRaw
 --  | LightOilRaw
 --  | HeavyOilRaw
@@ -93,6 +95,7 @@ data Product =
   | AssemblingMachine1
   | AssemblingMachine2
   | AssemblingMachine3
+  | SteelFurnace
   | ElectricFurnace
   | ElectricEngineUnit
   | Lubricant
@@ -100,6 +103,12 @@ data Product =
   | Stone
   | LaserTurret
   | Battery
+  | ChemicalPlant
+  | OilRefinery
+  | LabBuilding
+  | BoilerBuilding
+  | SteamEngineBuilding
+  | StoneFurnace
   
   | ElectricalEnergy -- in J
   | ChemicalEnergy -- in J
@@ -113,6 +122,7 @@ data Product =
   | HeavyOil
   | CrudeOil
   | BuriedCoal
+  | BuriedStone
   | Pollution
   deriving (Eq, Ord, Show, Enum, Bounded, Ix, Generic)
 
@@ -129,9 +139,33 @@ instance VectorSpace Time where
   type Scalar Time = Rat
   scale x (Time t) = Time (x * t)
 
-data FactoryKind =
-  Assembly
-  | Smelter
+data VenueKind =
+  AssemblyVenueKind
+  | SmelterVenueKind
+  | ChemicalVenueKind
+  | MinerVenueKind
+  | LabVenueKind
+  | BoilerVenueKind
+  | SteamEngineVenueKind
+  | RefineryVenueKind
+  | NoVenueVenueKind
+  deriving (Show, Ord, Eq) 
+venuesByKind :: VenueKind -> [Venue]
+venuesByKind AssemblyVenueKind = [Assembly2, Assembly3]
+venuesByKind SmelterVenueKind = [SmelterBurner, SmelterElectric]
+venuesByKind ChemicalVenueKind = [Chemical]
+venuesByKind MinerVenueKind = [Miner]
+venuesByKind LabVenueKind = [Lab]
+venuesByKind BoilerVenueKind = [Boiler]
+venuesByKind SteamEngineVenueKind = [SteamEngine]
+venuesByKind RefineryVenueKind = [Refinery]
+venuesByKind NoVenueVenueKind = [NoVenue]
+
+data Venue =
+  Assembly2
+  | Assembly3
+  | SmelterBurner
+  | SmelterElectric
   | Chemical
   | Miner
   | Lab
@@ -139,53 +173,53 @@ data FactoryKind =
   | SteamEngine
   | Refinery
   | NoVenue
-  deriving (Show, Eq, Ord)
+  deriving (Show, Eq, Ord, Generic)
 
-data Config = Config
+data ModuleConfig = ModuleConfig
   {
     configSpeedBonus :: Rat,
     configProductivityBonus :: Rat,
     configEnergyBonus :: Rat,
-    configPollutionBonus :: Rat,
-    configSpeedPreMultiplier :: Rat,
-    configEnergyPreMultiplier :: Rat,
-    configPollutionPreMultiplier :: Rat
+    configPollutionBonus :: Rat
   } deriving Show
 
-speedMultiplier x = configSpeedPreMultiplier x * (1 + configSpeedBonus x)
-productivityMultiplier x = 1 + configProductivityBonus x
-energyMultiplier x = configEnergyPreMultiplier x * max 0.2 (1 + configEnergyBonus x)
-pollutionMultiplier x = configPollutionPreMultiplier x * (1 + configPollutionBonus x)
+data Config = Config
+  {
+    configVenue :: Venue,
+    configModules :: ModuleConfig
+  }
+    
 
-instance Monoid Config where
-  mempty = Config 0 0 0 0 1 1 1
+speedMultiplier c = (1 + configSpeedBonus x) where x = configModules c
+productivityMultiplier c = 1 + configProductivityBonus x where x = configModules c
+energyMultiplier c = max 0.2 (1 + configEnergyBonus x) where x = configModules c
+pollutionMultiplier c = (1 + configPollutionBonus x) where x = configModules c
+
+instance Monoid ModuleConfig where
+  mempty = ModuleConfig 0 0 0 0
   a `mappend` b =
-    Config
-      { 
+    ModuleConfig
+      {
         configSpeedBonus = (configSpeedBonus a + configSpeedBonus b),
         configProductivityBonus = (configProductivityBonus a + configProductivityBonus b),
         configEnergyBonus = (configEnergyBonus a + configEnergyBonus b),
-        configPollutionBonus = (configPollutionBonus a + configPollutionBonus b),
-        configSpeedPreMultiplier = (configSpeedPreMultiplier a * configSpeedPreMultiplier b),
-        configEnergyPreMultiplier = (configEnergyPreMultiplier a * configEnergyPreMultiplier b),
-        configPollutionPreMultiplier = (configPollutionPreMultiplier a * configPollutionPreMultiplier b)
+        configPollutionBonus = (configPollutionBonus a + configPollutionBonus b)
       }
 
 data Usability =
   Unusable | Usable
 
-moduleToConfig SpeedModule = Config 0.2 0 0.5 0 1 1 1
-moduleToConfig SpeedModule2 = Config 0.3 0 0.6 0 1 1 1
-moduleToConfig SpeedModule3 = Config 0.5 0 0.7 0 1 1 1
-moduleToConfig EfficiencyModule = Config 0 0 (negate 0.3) 0 1 1 1
-moduleToConfig EfficiencyModule2 = Config 0 0 (negate 0.4) 0 1 1 1
-moduleToConfig EfficiencyModule3 = Config 0 0 (negate 0.5) 0 1 1 1
-moduleToConfig ProductivityModule = Config (negate 0.15) 0.04 0.4 0 1 1 1
-moduleToConfig ProductivityModule2 = Config (negate 0.15) 0.06 0.6 0 1 1 1
-moduleToConfig ProductivityModule3 = Config (negate 0.15) 0.10 0.8 0 1 1 1
-moduleToConfig AssemblingMachine3 = Config 0 0 0 0 (1.25/0.75) (210/150) ((1.8/210)/(2.4/150))
+moduleToConfig SpeedModule = ModuleConfig 0.2 0 0.5 0
+moduleToConfig SpeedModule2 = ModuleConfig 0.3 0 0.6 0
+moduleToConfig SpeedModule3 = ModuleConfig 0.5 0 0.7 0
+moduleToConfig EfficiencyModule = ModuleConfig 0 0 (negate 0.3) 0
+moduleToConfig EfficiencyModule2 = ModuleConfig 0 0 (negate 0.4) 0
+moduleToConfig EfficiencyModule3 = ModuleConfig 0 0 (negate 0.5) 0
+moduleToConfig ProductivityModule = ModuleConfig (negate 0.15) 0.04 0.4 0
+moduleToConfig ProductivityModule2 = ModuleConfig (negate 0.15) 0.06 0.6 0
+moduleToConfig ProductivityModule3 = ModuleConfig (negate 0.15) 0.10 0.8 0
 
-allModules :: Usability -> [([Product], Config)]
+allModules :: Usability -> [([Product], ModuleConfig)]
 allModules usability =
   [ ([], mempty) ] ++
   (map (\m -> ([m], moduleToConfig m)) $
@@ -211,21 +245,29 @@ choose k l
      [] -> []
      (x : xs) -> map (x:) (choose (k-1) l) ++ choose k xs
 
-availableConfigs :: FactoryKind -> Usability -> [([Product], Config)]
-availableConfigs kind usability =
+moduleSlots :: Venue -> Int
+moduleSlots venue = case venue of
+        Assembly2 -> 2
+        Assembly3 -> 4
+        SmelterElectric -> 2
+        SmelterBurner -> 0
+        Chemical -> 3
+        Miner -> 3
+        Lab -> 2
+        Boiler -> 0
+        SteamEngine -> 0
+        Refinery -> 3
+        NoVenue -> 0
+
+availableConfigs :: VenueKind -> Usability -> [((Venue, [Product]), Config)]
+availableConfigs venueKind usability =
+  let venues = venuesByKind venueKind in
   let availableModules = allModules usability in
-  map mconcat $ case kind of
-    Assembly ->
-      map (([AssemblingMachine3], moduleToConfig AssemblingMachine3):) (choose 4 availableModules)
-      ++ choose 2 availableModules
-    Smelter -> choose 2 availableModules
-    Chemical -> choose 3 availableModules
-    Miner -> choose 3 availableModules
-    Lab -> choose 2 availableModules
-    Boiler -> choose 0 availableModules
-    SteamEngine -> choose 0 availableModules
-    Refinery -> choose 3 availableModules
-    NoVenue -> choose 0 availableModules
+  do
+    venue <- venues
+    modules' <- choose (moduleSlots venue) availableModules
+    let (modules, moduleConfig) = mconcat modules'
+    return $ ((venue, modules), Config { configVenue = venue, configModules = moduleConfig })
 
 -- in Watt
 data Power =
@@ -234,10 +276,12 @@ data Power =
 
 baseBoilerPower = 3.6e6
 
-basePower :: FactoryKind -> Power
-basePower Assembly = ElectricalPower 150e3
+basePower :: Venue -> Power
+basePower Assembly2 = ElectricalPower 150e3
+basePower Assembly3 = ElectricalPower 210e3
 basePower Miner = ElectricalPower 90e3
-basePower Smelter = ElectricalPower 180e3
+basePower SmelterElectric = ElectricalPower 180e3
+basePower SmelterBurner = ChemicalPower 180e3
 basePower Chemical = ElectricalPower 210e3
 basePower Lab = ElectricalPower 60e3
 basePower Boiler = ChemicalPower baseBoilerPower
@@ -245,9 +289,11 @@ basePower SteamEngine = ElectricalPower 0
 basePower Refinery = ElectricalPower 420e3
 basePower NoVenue = ElectricalPower 0
 
-basePollution Assembly = 2.4
+basePollution Assembly2 = 2.4
+basePollution Assembly3 = 1.8
 basePollution Miner = 9
-basePollution Smelter = 0.9
+basePollution SmelterElectric = 0.9
+basePollution SmelterBurner = 3.6
 basePollution Chemical = 1.8
 basePollution Lab = 0
 basePollution Boiler = 27.6923
@@ -257,9 +303,11 @@ basePollution NoVenue = 0
 
 labUpgrades = 1.5 -- +20% +30%
 
-baseSpeed Assembly = 0.75 -- blue by default, upgraded with a pseudomodule
+baseSpeed Assembly2 = 0.75
+baseSpeed Assembly3 = 1.25
 baseSpeed Miner = 1 -- factored in into the recipe -- CR-someday: take productivity upgrades into account
-baseSpeed Smelter = 2
+baseSpeed SmelterElectric = 2
+baseSpeed SmelterBurner = 2
 baseSpeed Chemical = 1.25
 baseSpeed Lab = labUpgrades
 baseSpeed Boiler = 1 -- this is factored into the recipe
@@ -268,7 +316,13 @@ baseSpeed Refinery = 1
 baseSpeed NoVenue = 1 -- this is meaningless
 
 currentConfig :: Recipe -> Config
-currentConfig = mconcat . map moduleToConfig . currentModules
+currentConfig = \recipe ->
+  let (venue, modules) = currentModules recipe in
+  Config
+    {
+      configVenue = venue,
+      configModules = mconcat . map moduleToConfig $ modules
+    }
 
 scaleTime s (Time t) = Time (s * t)
 
@@ -279,7 +333,7 @@ data Recipe = Recipe
     recipeName :: RecipeName,
     recipeProducts :: [(Product, Rat)],
     recipeMaterials :: [(Product, Rat)],
-    recipeVenue :: FactoryKind,
+    recipeVenueKind :: VenueKind,
     recipeTime :: Time
   } deriving (Eq, Ord, Show)
 
@@ -302,80 +356,89 @@ energy_per_steam = 30000
 
 recipes :: [Recipe]
 recipes =
+  let assembly = AssemblyVenueKind in
+  let smelter = SmelterVenueKind in
   [
-    r GearWheel 1 [(IronPlate, 4)] Assembly (Time 0.5),
-    r IronPlate 1 [(IronOre, 1)] Smelter (Time 3.5),
-    r CopperPlate 1 [(CopperOre, 1)] Smelter (Time 3.5),
-    r SteelPlate 1 [(IronPlate, 10)] Smelter (Time 35),
-    r IronOre 1[(BuriedIron, 1)] Miner (Time (1/0.525)),
-    r CopperOre 1[(BuriedCopper, 1)] Miner (Time (1/0.525)),
-    r Coal 1 [(BuriedCoal, 1)] Miner ( Time (1/0.525)),
-    r Plastic 2[(PetroleumGas, 20), (Coal, 1)] Chemical (Time 1),
-    r ElectronicCircuit 1 [(CopperCable, 10), (IronPlate, 2)] Assembly (Time 0.5),
-    r AdvancedCircuit 1 [(Plastic, 4), (CopperCable, 8), (ElectronicCircuit, 2)] Assembly (Time 6),
-    r CopperCable 2 [(CopperPlate, 1)] Assembly (Time 0.5),
-    r Pipe 1 [(IronPlate, 2)] Assembly (Time 0.5),
-    r EngineUnit 1 [(GearWheel, 1), (Pipe, 2), (SteelPlate, 1)] Assembly (Time 10),
-    r ElectricMiningDrill 1 [(GearWheel, 10), (IronPlate, 20), (ElectronicCircuit, 5)] Assembly (Time 2),
-    r SciencePack3 1 [(AdvancedCircuit, 1), (ElectricMiningDrill, 1), (EngineUnit, 1)] Assembly (Time 12),
-    r SciencePack1 1 [(CopperPlate, 1), (GearWheel, 1)] Assembly (Time 5),
-    r SciencePack2 1 [(Inserter, 1), (TransportBelt, 1)] Assembly (Time 6),
-    r SciencePackProduction 2 [(ElectricEngineUnit, 1), (ElectricFurnace, 1)] Assembly (Time 14),
-    r PiercingRoundMagazine 1 [(FirearmRoundMagazine, 1), (SteelPlate, 1), (CopperPlate, 5)] Assembly (Time 3),
-    r FirearmRoundMagazine 1 [(IronPlate, 4)] Assembly (Time 1),
-    r Grenade 1 [(IronPlate, 5), (Coal, 10)] Assembly (Time 8),
-    r GunTurret 1[(GearWheel, 10), (CopperPlate, 10), (IronPlate, 20)] Assembly (Time 8),
-    r SciencePackMilitary 2 [(PiercingRoundMagazine, 1), (Grenade, 1), (GunTurret, 1)] Assembly (Time 10),
-    r SpeedModule 1 [(AdvancedCircuit, 5), (ElectronicCircuit, 5)] Assembly (Time 15),
-    r EfficiencyModule 1 [(AdvancedCircuit, 5), (ElectronicCircuit, 5)] Assembly (Time 15),
-    r ProductivityModule 1 [(AdvancedCircuit, 5), (ElectronicCircuit, 5)] Assembly (Time 15),
-    r EfficiencyModule2 1 [(AdvancedCircuit, 5), (EfficiencyModule, 4), (ProcessingUnit, 5)] Assembly (Time 30),
-    r SpeedModule2 1 [(AdvancedCircuit, 5), (SpeedModule, 4), (ProcessingUnit, 5)] Assembly (Time 30),
-    r ProductivityModule2 1 [(AdvancedCircuit, 5), (ProductivityModule, 4), (ProcessingUnit, 5)] Assembly (Time 30),
-    r ProductivityModule3 1 [(AdvancedCircuit, 5), (ProductivityModule2, 5), (ProcessingUnit, 5)] Assembly (Time 60),
-    r SpeedModule3 1 [(AdvancedCircuit, 5), (SpeedModule2, 5), (ProcessingUnit, 5)] Assembly (Time 60),
-    r EfficiencyModule3 1 [(AdvancedCircuit, 5), (EfficiencyModule2, 5), (ProcessingUnit, 5)] Assembly (Time 60),
-    r ProcessingUnit 1 [(AdvancedCircuit, 2), (ElectronicCircuit, 20), (SulfuricAcid, 10)] Assembly (Time 10),
-    r SulfuricAcid 50 [(IronPlate, 1), (Sulfur, 5)] Chemical (Time 1),
-    r Sulfur 2 [(PetroleumGas, 30)] Chemical (Time 1),
-    r ResearchCoalLiquefaction (1/800) [(SciencePack1, 1), (SciencePack2, 1), (SciencePack3, 1), (SciencePackProduction, 1)] Lab (Time 30),
-    r ResearchNuclearPower (1/4000) [(SciencePack1, 1), (SciencePack2, 1), (SciencePack3, 1)] Lab (Time 30),
+    r GearWheel 1 [(IronPlate, 4)] assembly (Time 0.5),
+    r IronPlate 1 [(IronOre, 1)] smelter (Time 3.5),
+    r CopperPlate 1 [(CopperOre, 1)] smelter (Time 3.5),
+    r SteelPlate 1 [(IronPlate, 10)] smelter (Time 35),
+    r IronOre 1[(BuriedIron, 1)] MinerVenueKind (Time (1/0.525)),
+    r CopperOre 1[(BuriedCopper, 1)] MinerVenueKind (Time (1/0.525)),
+    r Coal 1 [(BuriedCoal, 1)] MinerVenueKind (Time (1/0.525)),
+    r Plastic 2[(PetroleumGas, 20), (Coal, 1)] ChemicalVenueKind (Time 1),
+    r ElectronicCircuit 1 [(CopperCable, 10), (IronPlate, 2)] assembly (Time 0.5),
+    r AdvancedCircuit 1 [(Plastic, 4), (CopperCable, 8), (ElectronicCircuit, 2)] assembly (Time 6),
+    r CopperCable 2 [(CopperPlate, 1)] assembly (Time 0.5),
+    r Pipe 1 [(IronPlate, 2)] assembly (Time 0.5),
+    r EngineUnit 1 [(GearWheel, 1), (Pipe, 2), (SteelPlate, 1)] assembly (Time 10),
+    r ElectricMiningDrill 1 [(GearWheel, 10), (IronPlate, 20), (ElectronicCircuit, 5)] assembly (Time 2),
+    r SciencePack3 1 [(AdvancedCircuit, 1), (ElectricMiningDrill, 1), (EngineUnit, 1)] assembly (Time 12),
+    r SciencePack1 1 [(CopperPlate, 1), (GearWheel, 1)] assembly (Time 5),
+    r SciencePack2 1 [(Inserter, 1), (TransportBelt, 1)] assembly (Time 6),
+    r SciencePackProduction 2 [(ElectricEngineUnit, 1), (ElectricFurnace, 1)] assembly (Time 14),
+    r PiercingRoundMagazine 1 [(FirearmRoundMagazine, 1), (SteelPlate, 1), (CopperPlate, 5)] assembly (Time 3),
+    r FirearmRoundMagazine 1 [(IronPlate, 4)] assembly (Time 1),
+    r Grenade 1 [(IronPlate, 5), (Coal, 10)] assembly (Time 8),
+    r GunTurret 1[(GearWheel, 10), (CopperPlate, 10), (IronPlate, 20)] assembly (Time 8),
+    r SciencePackMilitary 2 [(PiercingRoundMagazine, 1), (Grenade, 1), (GunTurret, 1)] assembly (Time 10),
+    r SpeedModule 1 [(AdvancedCircuit, 5), (ElectronicCircuit, 5)] assembly (Time 15),
+    r EfficiencyModule 1 [(AdvancedCircuit, 5), (ElectronicCircuit, 5)] assembly (Time 15),
+    r ProductivityModule 1 [(AdvancedCircuit, 5), (ElectronicCircuit, 5)] assembly (Time 15),
+    r EfficiencyModule2 1 [(AdvancedCircuit, 5), (EfficiencyModule, 4), (ProcessingUnit, 5)] assembly (Time 30),
+    r SpeedModule2 1 [(AdvancedCircuit, 5), (SpeedModule, 4), (ProcessingUnit, 5)] assembly (Time 30),
+    r ProductivityModule2 1 [(AdvancedCircuit, 5), (ProductivityModule, 4), (ProcessingUnit, 5)] assembly (Time 30),
+    r ProductivityModule3 1 [(AdvancedCircuit, 5), (ProductivityModule2, 5), (ProcessingUnit, 5)] assembly (Time 60),
+    r SpeedModule3 1 [(AdvancedCircuit, 5), (SpeedModule2, 5), (ProcessingUnit, 5)] assembly (Time 60),
+    r EfficiencyModule3 1 [(AdvancedCircuit, 5), (EfficiencyModule2, 5), (ProcessingUnit, 5)] assembly (Time 60),
+    r ProcessingUnit 1 [(AdvancedCircuit, 2), (ElectronicCircuit, 20), (SulfuricAcid, 10)] assembly (Time 10),
+    r SulfuricAcid 50 [(IronPlate, 1), (Sulfur, 5)] ChemicalVenueKind (Time 1),
+    r Sulfur 2 [(PetroleumGas, 30)] ChemicalVenueKind (Time 1),
+    r ResearchCoalLiquefaction (1/800) [(SciencePack1, 1), (SciencePack2, 1), (SciencePack3, 1), (SciencePackProduction, 1)] LabVenueKind (Time 30),
+    r ResearchNuclearPower (1/4000) [(SciencePack1, 1), (SciencePack2, 1), (SciencePack3, 1)] LabVenueKind (Time 30),
     r ResearchLaserTurretDamage5 (1/800)
-      [(SciencePack1, 1), (SciencePack2, 1), (SciencePack3, 1), (SciencePackProduction, 1), (SciencePackHighTech, 1)] Lab (Time 60),
+      [(SciencePack1, 1), (SciencePack2, 1), (SciencePack3, 1), (SciencePackProduction, 1), (SciencePackHighTech, 1)] LabVenueKind (Time 60),
     r ResearchRocketSilo (1/4000)
       [ (SciencePack1, 1)
       , (SciencePack2, 1)
       , (SciencePack3, 1)
       , (SciencePackProduction, 1)
       , (SciencePackHighTech, 1)
-      , (SciencePackMilitary, 1)] Lab (Time 60),
-    r Inserter 1 [(ElectronicCircuit, 1), (IronPlate, 1), (GearWheel, 1)] Assembly (Time 0.5),
-    r TransportBelt 2 [(GearWheel, 1), (IronPlate, 1)] Assembly (Time 0.5),
-    r AssemblingMachine1 1 [(GearWheel, 5), (IronPlate, 9), (ElectronicCircuit, 3)] Assembly (Time 0.5),
-    r AssemblingMachine2 1 [(AssemblingMachine1, 1), (ElectronicCircuit, 5), (GearWheel, 10), (IronPlate, 20)] Assembly (Time 0.5),
-    r AssemblingMachine3 1 [(AssemblingMachine2, 2), (SpeedModule, 4)] Assembly (Time 0.5),
-    r ElectricFurnace 1 [(AdvancedCircuit, 5), (SteelPlate, 10), (StoneBrick, 10)] Assembly (Time 5),
-    r ElectricEngineUnit 1 [(ElectronicCircuit, 2), (EngineUnit, 1), (Lubricant, 15)] Assembly (Time 10),
-    r StoneBrick 1 [(Stone, 2)] Smelter (Time 3.5),
-    r Stone 1 [] Miner (Time 0.65), -- incorrect components
-    r Lubricant 10 [(HeavyOil, 10)] Chemical (Time 1),
-    r LaserTurret 1 [(Battery, 12), (ElectronicCircuit, 20), (SteelPlate, 20)] Assembly (Time 20),
-    r Battery 1[(CopperPlate, 1), (IronPlate, 1), (SulfuricAcid, 40)] Chemical (Time 5),
-    r SciencePackHighTech 2[(Battery, 1), (CopperCable, 30), (ProcessingUnit, 3), (SpeedModule, 1)] Assembly (Time 14),
+      , (SciencePackMilitary, 1)] LabVenueKind (Time 60),
+    r Inserter 1 [(ElectronicCircuit, 1), (IronPlate, 1), (GearWheel, 1)] assembly (Time 0.5),
+    r TransportBelt 2 [(GearWheel, 1), (IronPlate, 1)] assembly (Time 0.5),
+    r AssemblingMachine1 1 [(GearWheel, 5), (IronPlate, 9), (ElectronicCircuit, 3)] assembly (Time 0.5),
+    r AssemblingMachine2 1 [(AssemblingMachine1, 1), (ElectronicCircuit, 5), (GearWheel, 10), (IronPlate, 20)] assembly (Time 0.5),
+    r AssemblingMachine3 1 [(AssemblingMachine2, 2), (SpeedModule, 4)] assembly (Time 0.5),
+    r SteelFurnace 1 [(SteelPlate, 6), (StoneBrick, 10)] assembly (Time 3),
+    r ElectricFurnace 1 [(AdvancedCircuit, 5), (SteelPlate, 10), (StoneBrick, 10)] assembly (Time 5),
+    r ElectricEngineUnit 1 [(ElectronicCircuit, 2), (EngineUnit, 1), (Lubricant, 15)] assembly (Time 10),
+    r StoneBrick 1 [(Stone, 2)] smelter (Time 3.5),
+    r Stone 1 [(BuriedStone, 1)] MinerVenueKind (Time 0.65),
+    r Lubricant 10 [(HeavyOil, 10)] ChemicalVenueKind (Time 1),
+    r LaserTurret 1 [(Battery, 12), (ElectronicCircuit, 20), (SteelPlate, 20)] assembly (Time 20),
+    r Battery 1[(CopperPlate, 1), (IronPlate, 1), (SulfuricAcid, 40)] ChemicalVenueKind (Time 5),
+    r SciencePackHighTech 2 [(Battery, 1), (CopperCable, 30), (ProcessingUnit, 3), (SpeedModule, 1)] assembly (Time 14),
+    r ChemicalPlant 1 [(ElectronicCircuit, 5), (GearWheel, 5), (Pipe, 5), (SteelPlate, 5)] assembly (Time 5),
+    r OilRefinery 1 [(ElectronicCircuit, 10), (GearWheel, 10), (Pipe, 10), (SteelPlate, 15), (StoneBrick, 10)] assembly (Time 8),
+    r LabBuilding 1 [(ElectronicCircuit, 10), (GearWheel, 10), (TransportBelt, 4)] assembly (Time 2),
+    r BoilerBuilding 1 [(Pipe, 4), (StoneFurnace, 1)] assembly (Time 0.5),
+    r StoneFurnace 1 [(Stone, 5)] assembly (Time 0.5),
+    r SteamEngineBuilding 1 [(GearWheel, 10), (IronPlate, 50), (Pipe, 5)] assembly (Time 0.5),
     
-    Recipe BoilerRecipe [(Steam, (baseBoilerPower * 0.5) / energy_per_steam)] [] Boiler (Time 1),
---    Recipe (UseAsFuelRecipe SolidFuel) [(Steam, (25e6 * 0.5) / energy_per_steam)] [(SolidFuel, 1)] Boiler (Time 1), -- incorrect time, but nothing cares
-    Recipe (UseAsFuelRecipe Coal) [(ChemicalEnergy, 8e6)] [(Coal, 1)] NoVenue (Time 1), -- time is meaningless here
-    r ElectricalEnergy 1 [(Steam, 1/energy_per_steam)] SteamEngine (Time (1/900e3)),
+    Recipe BoilerRecipe [(Steam, (baseBoilerPower * 0.5) / energy_per_steam)] [] BoilerVenueKind (Time 1),
+--    Recipe (UseAsFuelRecipe SolidFuel) [(Steam, (25e6 * 0.5) / energy_per_steam)] [(SolidFuel, 1)] BoilerVenueKind (Time 1), -- incorrect time, but nothing cares
+    Recipe (UseAsFuelRecipe Coal) [(ChemicalEnergy, 8e6)] [(Coal, 1)] NoVenueVenueKind (Time 1), -- time is meaningless here
+    r ElectricalEnergy 1 [(Steam, 1/energy_per_steam)] SteamEngineVenueKind (Time (1/900e3)),
     
-    r PetroleumGas 2 [(LightOil, 3)] Chemical (Time 5),
+    r PetroleumGas 2 [(LightOil, 3)] ChemicalVenueKind (Time 5),
     
-    r SolidFuel 1 [(LightOil, 10)] Chemical (Time 3),
-    r LightOil 3[(HeavyOil, 4)] Chemical (Time 5),
-    Recipe AdvancedOilProcessing [(HeavyOil, 10), (LightOil, 45), (PetroleumGas, 55)] [(CrudeOil, 100)] Refinery (Time 5)
---    Recipe LiquefactionRecipe [(HeavyOil, 35), (LightOil, 15), (PetroleumGas, 20)] [(Coal, 10), (HeavyOil, 25), (Steam, 50)] Refinery (Time 5)
+    r SolidFuel 1 [(LightOil, 10)] ChemicalVenueKind (Time 3),
+    r LightOil 3[(HeavyOil, 4)] ChemicalVenueKind (Time 5),
+    Recipe AdvancedOilProcessing [(HeavyOil, 10), (LightOil, 45), (PetroleumGas, 55)] [(CrudeOil, 100)] RefineryVenueKind (Time 5)
+--    Recipe LiquefactionRecipe [(HeavyOil, 35), (LightOil, 15), (PetroleumGas, 20)] [(Coal, 10), (HeavyOil, 25), (Steam, 50)] RefineryVenueKind (Time 5)
   ] where
-  r product quantity ingredients venue time = Recipe (ProductRecipe product) [(product, quantity)] ingredients venue time
+  r product quantity ingredients venues time = Recipe (ProductRecipe product) [(product, quantity)] ingredients venues time
 
 mconcat' x = foldr add zero x
 
@@ -387,9 +450,10 @@ recipesByName = Map.fromListWith (error "multiple recipes with the same name") (
 
 recipesToMatrix :: (Recipe -> Config) -> Map RecipeName (Map Product Rat)
 recipesToMatrix configs = 
-  fmap (\recipe@(Recipe _recipeName production consumption venue (Time time)) ->
+  fmap (\recipe@(Recipe _recipeName production consumption venueKind (Time time)) ->
          (
          let config = configs recipe in
+         let venue = configVenue config in
            let
              energy_and_pollution =
                let multiplier = (time / (speedMultiplier config * baseSpeed venue)) * energyMultiplier config in
@@ -613,6 +677,13 @@ usability' FirearmRoundMagazine = Usable
 usability' Grenade = Usable
 usability' GunTurret = Usable
 usability' SciencePackMilitary = Unusable
+usability' SteelFurnace = Usable
+usability' StoneFurnace = Usable
+usability' LabBuilding = Usable
+usability' SteamEngineBuilding = Usable
+usability' BoilerBuilding = Usable
+usability' OilRefinery = Usable
+usability' ChemicalPlant = Usable
 usability' x = error $ "undefined usability: " ++ show x
 
 usability recipe =
@@ -630,6 +701,7 @@ evaluateTotalCost f = sum [ (estimate k * v) | (k, v) <- Map.toList f, v /= zero
   estimate BuriedCoal = 1.5
   estimate BuriedIron = 1
   estimate BuriedCopper = 1
+  estimate BuriedStone = 0.3
   estimate Pollution = 0.1
   estimate product = error $ "don't know how much this is worth: " ++ show product
 --  estimate PetroleumGas = 0.1
@@ -646,29 +718,27 @@ data RecipeImprovement =
   deriving Generic
 
 instance NFData RecipeImprovement
+instance NFData Venue
 
-possibleSavings :: Recipe -> [([Product], RecipeImprovement)]
+possibleSavings :: Recipe -> [((Venue, [Product]), RecipeImprovement)]
 possibleSavings recipe = (`using` parList rdeepseq) $
-  let venue = recipeVenue recipe in
+  let venueKind = recipeVenueKind recipe in
   let Time time = recipeTime recipe in
     [ let saving_per_execution =
             add
             (compute_recipe currentConfig recipe)
             (fmap negate $ compute_recipe (\p -> if p == recipe then config else currentConfig p) recipe)
       in
-        let execution_time_old =
-              time / (speedMultiplier (currentConfig recipe) * baseSpeed venue)
-        in
-        let execution_time =
-              time / (speedMultiplier config * baseSpeed venue)
-        in
+        let execution_time' config = time / (speedMultiplier config * baseSpeed (configVenue config)) in
+        let execution_time_old = execution_time' (currentConfig recipe) in
+        let execution_time = execution_time' config in
           let
             modules_cost_per_execution_per_second_old =
-              scale execution_time_old (modulesCost (currentModules recipe))
+              scale execution_time_old (capitalCost (currentModules recipe))
           in
           let
             modules_cost_per_execution_per_second_new =
-              scale execution_time (modulesCost modules)
+              scale execution_time (capitalCost modules)
           in
           let
             cost_per_execution_per_second =
@@ -678,7 +748,7 @@ possibleSavings recipe = (`using` parList rdeepseq) $
               recipeImprovement_saving_per_execution = saving_per_execution,
               recipeImprovement_execution_time = Time execution_time,
               recipeImprovement_cost_per_execution_per_second = cost_per_execution_per_second })
-      | (modules, config) <- availableConfigs venue (usability recipe)]
+      | (modules, config) <- availableConfigs venueKind (usability recipe)]
 
 newtype Rat = Rat Rational deriving (Eq, Ord, Generic, NFData, Linear, Num, Fractional, Real)
 
@@ -698,12 +768,27 @@ showModule EfficiencyModule3 = "e3"
 showModule ProductivityModule = "p1"
 showModule ProductivityModule2 = "p2"
 showModule ProductivityModule3 = "p3"
-showModule AssemblingMachine3 = "+"
 
 divv a b = if b == 0 then 1e10 else a / b
 
-modulesCost modules = mconcat' $ map computeTotalCost modules
+venueBuilding :: Venue -> [Product]
+venueBuilding venue = case venue of
+  Assembly2 -> [AssemblingMachine2]
+  Assembly3 -> [AssemblingMachine3]
+  Miner -> [ElectricMiningDrill]
+  SmelterElectric -> [ElectricFurnace]
+  SmelterBurner -> [SteelFurnace]
+  Chemical -> [ChemicalPlant]
+  Lab -> [LabBuilding]
+  Boiler -> [BoilerBuilding]
+  SteamEngine -> [SteamEngineBuilding]
+  NoVenue -> []
+  Refinery -> [OilRefinery]
 
+capitalCost (venue, modules) =
+  mconcat' $ map computeTotalCost (modules ++ venueBuilding venue)
+
+x = x
 partition_market l
   =
   ( p (\(gain, cost) -> gain >= 0 && cost <= 0) (\(gain, cost) -> gain - cost) -- free money
@@ -716,11 +801,11 @@ partition_market l
 allRecipeNames = [recipeName recipe | recipe <- recipes]
 
 possibleSavings' (Time totalTime) executions_per_second =
-  [ (recipeName, (concatMap showModule modules), saving, cost + installationCost)
+  [ (recipeName, show venue ++ (concatMap showModule modules), saving, cost + installationCost)
   | recipe <- recipes
   , recipeName <- return $ recipeName recipe
   , executions_per_second <- return (executions_per_second recipeName)
-  , (modules, RecipeImprovement {
+  , ((venue, modules), RecipeImprovement {
               recipeImprovement_saving_per_execution,
               recipeImprovement_execution_time,
               recipeImprovement_cost_per_execution_per_second}) <- possibleSavings recipe
@@ -743,9 +828,14 @@ lookup0 m k = case Map.lookup k m of
   Nothing -> zero
   Just x -> x
 
+currentRecipeVenue recipe =
+  let config = (currentConfig recipe) in
+  configVenue config
+
 effectiveExecutionTime recipeName =
   let recipe = (recipesByName Map.! recipeName) in
-  unTime (recipeTime recipe) / (speedMultiplier (currentConfig recipe) * baseSpeed (recipeVenue recipe))
+  unTime (recipeTime recipe)
+     / (speedMultiplier (currentConfig recipe) * baseSpeed (currentRecipeVenue recipe))
 
 rCols =
   [ ("Efficiency", (\(_, _, gain, cost) -> show (gain / cost)))
@@ -825,54 +915,90 @@ matrix_of_lists lists =
 identity_matrix :: (Ix' a) => Matrix a a Rat
 identity_matrix = Matrix (f_array (\(a,b) -> if a == b then 1 else 0))
 
-p1 = ProductivityModule
-p2 = ProductivityModule2
-p3 = ProductivityModule3
-s1 = SpeedModule
-s2 = SpeedModule2
-e1 = EfficiencyModule
-p = AssemblingMachine3
+p1 = ModuleEnhancement ProductivityModule
+p2 = ModuleEnhancement ProductivityModule2
+p3 = ModuleEnhancement ProductivityModule3
+s1 = ModuleEnhancement SpeedModule
+s2 = ModuleEnhancement SpeedModule2
+e1 = ModuleEnhancement EfficiencyModule
+p = VenueEnhancement Assembly3
 
--- todo:
-{-currentModules' EngineUnit = [p, s1, p1, p1, p1]
-currentModules' Sulfur = [p2, p2, p2]
+currentDefaultVenue :: VenueKind -> Venue
+currentDefaultVenue AssemblyVenueKind = Assembly2
+currentDefaultVenue SmelterVenueKind = SmelterElectric
+currentDefaultVenue venueKind = case venuesByKind venueKind of
+  [ venue ] -> venue
+  _ -> error "ambiguous venue"
 
-currentModules' ResearchRocketSilo = [p2, p2]
-currentModules' SulfuricAcid = [p3, p3, p3]
-currentModules' ProcessingUnit = [p, p3, p3, p3, s2]
-currentModules' ElectricEngineUnit = [p, s1, p1, p1, p1]
-currentModules' CopperCable = [p, s1, p1, p1, p1]
-currentModules' SciencePackMilitary = [p, s1, p2, p2, p2]
-currentModules' SciencePackProduction = [p, s2, p3, p3, p3]
-currentModules' SciencePackHighTech = [p, s2, p3, p3, p3]
-currentModules' SciencePack3 = [p, p2, p2, p2, s1]
-currentModules' ElectronicCircuit = [p, s1, p2, p2, p2]
-currentModules' GearWheel = [p, p2, p2, p2, s1]
-currentModules' ResearchCoalLiquefaction = [p1, p1]
-currentModules' ResearchLaserTurretDamage5 = [p1, p1]
-currentModules' AdvancedCircuit = [p, p1, p1, p1, s1]
-currentModules' Plastic = [p2, p2, p2]
-currentModules' SciencePack2 = [p1]
-currentModules' IronPlate = [e1, e1]
-currentModules' CopperPlate = [e1, e1]
-currentModules' SteelPlate = [e1, e1]
-currentModules' Battery = [p2, p2, p2] -}
+data CumulativeEnhancement = CumulativeEnhancement
+  {
+    cumulativeEnhancementVenue :: Maybe Venue,
+    cumulativeEnhancementModules :: [Product]
+  }
 
-currentModules' ProcessingUnit = [p, s1, p2, p2, p2]
-currentModules' GearWheel = [p1, p1]
-currentModules' ElectronicCircuit = [p, p2, p2, p1, s1]
-currentModules' SciencePack3 = [p, p2, p2, p1, s1]
-currentModules' SciencePackHighTech = [p, p2, p2, p1, s1]
-currentModules' SciencePackProduction = [p, p2, p2, p1, s1]
-currentModules' ResearchNuclearPower = [p1, p1]
-currentModules' _ = []
+equal_if_Just (Just a) (Just b)
+  | a == b = Just a
+  | otherwise = error "two different venues chosen at the same time"
+equal_if_Just Nothing b = b
+equal_if_Just a Nothing = a
+
+instance Monoid CumulativeEnhancement where
+  mempty = CumulativeEnhancement
+    {
+      cumulativeEnhancementVenue = Nothing,
+      cumulativeEnhancementModules = []
+    }
+  mappend a b = CumulativeEnhancement
+    {
+      cumulativeEnhancementVenue =
+        equal_if_Just (cumulativeEnhancementVenue a) (cumulativeEnhancementVenue b),
+      cumulativeEnhancementModules =
+        cumulativeEnhancementModules a ++ cumulativeEnhancementModules b
+    }
+
+data Enhancement =
+  ModuleEnhancement Product
+  | VenueEnhancement Venue
+
+collectEnhancements :: [Enhancement] -> CumulativeEnhancement
+collectEnhancements = mconcat . map toCumulative where
+  toCumulative (ModuleEnhancement m) = CumulativeEnhancement
+    {
+      cumulativeEnhancementVenue = Nothing,
+      cumulativeEnhancementModules = [m]
+    }
+  toCumulative (VenueEnhancement v) = CumulativeEnhancement
+    {
+      cumulativeEnhancementVenue = Just v,
+      cumulativeEnhancementModules = []
+    }
+
+currentEnhancements ProcessingUnit = [p, s1, p2, p2, p2]
+currentEnhancements GearWheel = [p1, p1]
+currentEnhancements ElectronicCircuit = [p, p2, p2, p1, s1]
+currentEnhancements SciencePack3 = [p, p2, p2, p1, s1]
+currentEnhancements SciencePackHighTech = [p, p2, p2, p1, s1]
+currentEnhancements SciencePackProduction = [p, p2, p2, p1, s1]
+currentEnhancements ResearchNuclearPower = [p1, p1]
+currentEnhancements _ = []
+
+trivial recipe =
+  (currentDefaultVenue (recipeVenueKind recipe), [])
 
 currentModules recipe =
   case recipeName recipe of
-    ProductRecipe product -> currentModules' product
-    LiquefactionRecipe -> []
-    AdvancedOilProcessing -> []
-    _ -> []
+    ProductRecipe product ->
+      let enhancements = collectEnhancements $ currentEnhancements product in
+      let
+        venue =
+          fromMaybe
+            (currentDefaultVenue (recipeVenueKind recipe))
+            (cumulativeEnhancementVenue enhancements)
+      in
+      (venue, cumulativeEnhancementModules enhancements)
+    LiquefactionRecipe -> trivial recipe
+    AdvancedOilProcessing -> trivial recipe
+    _ -> trivial recipe
 
 --main = print $ computeTotalCost SciencePack3
 main = report
