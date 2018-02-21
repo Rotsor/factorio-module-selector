@@ -698,11 +698,11 @@ evaluateTotalCost f = sum [ (estimate k * v) | (k, v) <- Map.toList f, v /= zero
 --  estimate LightOil = 0.1
   estimate CrudeOil = 0.1
   estimate HeavyOil = 0.1
-  estimate BuriedCoal = 1.5
+  estimate BuriedCoal = 1
   estimate BuriedIron = 1
   estimate BuriedCopper = 1
   estimate BuriedStone = 0.3
-  estimate Pollution = 0.1
+  estimate Pollution = 0.025
   estimate product = error $ "don't know how much this is worth: " ++ show product
 --  estimate PetroleumGas = 0.1
 
@@ -800,8 +800,24 @@ partition_market l
 
 allRecipeNames = [recipeName recipe | recipe <- recipes]
 
+venueKind_of_venue venue = case venue of
+  Assembly2 -> AssemblyVenueKind
+  Assembly3 -> AssemblyVenueKind
+  SmelterBurner -> SmelterVenueKind
+  SmelterElectric -> SmelterVenueKind
+  Chemical -> ChemicalVenueKind
+  Miner -> MinerVenueKind
+  Lab -> LabVenueKind
+  Boiler -> BoilerVenueKind
+  SteamEngine -> SteamEngineVenueKind
+  Refinery -> RefineryVenueKind
+  NoVenue -> NoVenueVenueKind
+  
+isVenueDefault venue =
+  venue == currentDefaultVenue (venueKind_of_venue venue)
 possibleSavings' (Time totalTime) executions_per_second =
-  [ (recipeName, show venue ++ (concatMap showModule modules), saving, cost + installationCost)
+  let showVenue' venue | isVenueDefault venue = "" | otherwise = "+" in
+  [ (recipeName, showVenue' venue ++ (concatMap showModule modules), saving, cost + installationCost)
   | recipe <- recipes
   , recipeName <- return $ recipeName recipe
   , executions_per_second <- return (executions_per_second recipeName)
@@ -925,7 +941,7 @@ p = VenueEnhancement Assembly3
 
 currentDefaultVenue :: VenueKind -> Venue
 currentDefaultVenue AssemblyVenueKind = Assembly2
-currentDefaultVenue SmelterVenueKind = SmelterElectric
+currentDefaultVenue SmelterVenueKind = SmelterBurner
 currentDefaultVenue venueKind = case venuesByKind venueKind of
   [ venue ] -> venue
   _ -> error "ambiguous venue"
@@ -974,12 +990,16 @@ collectEnhancements = mconcat . map toCumulative where
     }
 
 currentEnhancements ProcessingUnit = [p, s1, p2, p2, p2]
-currentEnhancements GearWheel = [p1, p1]
+currentEnhancements GearWheel = [p, p2, p1, p1, s1]
 currentEnhancements ElectronicCircuit = [p, p2, p2, p1, s1]
 currentEnhancements SciencePack3 = [p, p2, p2, p1, s1]
-currentEnhancements SciencePackHighTech = [p, p2, p2, p1, s1]
+currentEnhancements SciencePackHighTech = [p, p2, p2, p2, p2]
 currentEnhancements SciencePackProduction = [p, p2, p2, p1, s1]
 currentEnhancements ResearchNuclearPower = [p1, p1]
+currentEnhancements Plastic = [p2, p2, p2]
+currentEnhancements SciencePackMilitary = [p, p2, p2, p1, s1]
+currentEnhancements SulfuricAcid = [p2, p2, p2]
+currentEnhancements AdvancedCircuit = [p, e1, e1, p1, p1]
 currentEnhancements _ = []
 
 trivial recipe =
@@ -997,7 +1017,8 @@ currentModules recipe =
       in
       (venue, cumulativeEnhancementModules enhancements)
     LiquefactionRecipe -> trivial recipe
-    AdvancedOilProcessing -> trivial recipe
+    AdvancedOilProcessing ->
+      ((currentDefaultVenue (recipeVenueKind recipe)), cumulativeEnhancementModules (collectEnhancements [e1, e1, e1]))
     _ -> trivial recipe
 
 --main = print $ computeTotalCost SciencePack3
