@@ -109,6 +109,11 @@ data Product =
   | LabBuilding
   | BoilerBuilding
   | SteamEngineBuilding
+  | SolarFacilityBuilding
+  | Roboport
+  | Substation
+  | Accumulator
+  | SolarPanel
   | StoneFurnace
   
   | ElectricalEnergy -- in J
@@ -148,6 +153,7 @@ data VenueKind =
   | LabVenueKind
   | BoilerVenueKind
   | SteamEngineVenueKind
+  | SolarPowerVenueKind
   | RefineryVenueKind
   | NoVenueVenueKind
   deriving (Show, Ord, Eq) 
@@ -159,6 +165,7 @@ venuesByKind MinerVenueKind = [Miner]
 venuesByKind LabVenueKind = [Lab]
 venuesByKind BoilerVenueKind = [Boiler]
 venuesByKind SteamEngineVenueKind = [SteamEngine]
+venuesByKind SolarPowerVenueKind = [SolarFacility]
 venuesByKind RefineryVenueKind = [Refinery]
 venuesByKind NoVenueVenueKind = [NoVenue]
 
@@ -172,6 +179,7 @@ data Venue =
   | Lab
   | Boiler
   | SteamEngine
+  | SolarFacility
   | Refinery
   | NoVenue
   deriving (Show, Eq, Ord, Generic)
@@ -261,6 +269,7 @@ moduleSlots venue = case venue of
         Lab -> 2
         Boiler -> 0
         SteamEngine -> 0
+        SolarFacility -> 0
         Refinery -> 3
         NoVenue -> 0
 
@@ -294,6 +303,7 @@ basePower Chemical = ElectricalPower 210e3
 basePower Lab = ElectricalPower 60e3
 basePower Boiler = ChemicalPower baseBoilerPower
 basePower SteamEngine = ElectricalPower 0
+basePower SolarFacility = ElectricalPower 0
 basePower Refinery = ElectricalPower 420e3
 basePower NoVenue = ElectricalPower 0
 
@@ -306,11 +316,13 @@ basePollution Chemical = 1.8
 basePollution Lab = 0
 basePollution Boiler = 27.6923
 basePollution Refinery = 3.6
+basePollution SolarFacility = 0
 basePollution SteamEngine = 0
 basePollution NoVenue = 0
 
 labUpgrades = 1.5 -- +20% +30%
 
+baseSpeed SolarFacility = 1
 baseSpeed Assembly2 = 0.75
 baseSpeed Assembly3 = 1.25
 baseSpeed Miner = 1 -- factored in into the recipe -- CR-someday: take productivity upgrades into account
@@ -438,7 +450,13 @@ recipes =
     Recipe BoilerRecipe [(Steam, (baseBoilerPower * 0.5) / energy_per_steam)] [] BoilerVenueKind (Time 1),
 --    Recipe (UseAsFuelRecipe SolidFuel) [(Steam, (25e6 * 0.5) / energy_per_steam)] [(SolidFuel, 1)] BoilerVenueKind (Time 1), -- incorrect time, but nothing cares
     Recipe (UseAsFuelRecipe Coal) [(ChemicalEnergy, 8e6)] [(Coal, 1)] NoVenueVenueKind (Time 1), -- time is meaningless here
-    r ElectricalEnergy 1 [(Steam, 1/energy_per_steam)] SteamEngineVenueKind (Time (1/900e3)),
+--    r ElectricalEnergy 1 [(Steam, 1/energy_per_steam)] SteamEngineVenueKind (Time (1/900e3)),
+    r ElectricalEnergy (42e3 * 176) [] SolarPowerVenueKind (Time 1),
+    r SolarFacilityBuilding 1 [(SolarPanel, 176), (Accumulator, 166), (Substation, 10), (Roboport, 1)] NoVenueVenueKind (Time 1),
+    r Roboport 1 [(AdvancedCircuit, 45), (GearWheel, 45), (SteelPlate, 45)] assembly (Time 5),
+    r Substation 1 [(AdvancedCircuit, 5), (CopperPlate, 5), (SteelPlate, 10)] assembly (Time 0.5),
+    r Accumulator 1 [(Battery, 5), (IronPlate, 2)] assembly (Time 10),
+    r SolarPanel 1 [(CopperPlate, 5), (ElectronicCircuit, 15), (SteelPlate, 5)] assembly (Time 10),
     
     r PetroleumGas 2 [(LightOil, 3)] ChemicalVenueKind (Time 5),
     
@@ -693,6 +711,11 @@ usability' SteamEngineBuilding = Usable
 usability' BoilerBuilding = Usable
 usability' OilRefinery = Usable
 usability' ChemicalPlant = Usable
+usability' SolarFacilityBuilding = Usable
+usability' SolarPanel = Usable
+usability' Accumulator = Usable
+usability' Substation = Usable
+usability' Roboport = Usable
 usability' x = error $ "undefined usability: " ++ show x
 
 usability recipe =
@@ -711,7 +734,7 @@ evaluateTotalCost f = sum [ (estimate k * v) | (k, v) <- Map.toList f, v /= zero
   estimate BuriedIron = 1
   estimate BuriedCopper = 1
   estimate BuriedStone = 0.3
-  estimate Pollution = 0.025
+  estimate Pollution = 0.0025
   estimate product = error $ "don't know how much this is worth: " ++ show product
 --  estimate PetroleumGas = 0.1
 
@@ -831,6 +854,7 @@ venueBuilding venue = case venue of
   Lab -> [LabBuilding]
   Boiler -> [BoilerBuilding]
   SteamEngine -> [SteamEngineBuilding]
+  SolarFacility -> [SolarFacilityBuilding]
   NoVenue -> []
   Refinery -> [OilRefinery]
 
@@ -1017,7 +1041,7 @@ p = VenueEnhancement Assembly3
 
 currentDefaultVenue :: VenueKind -> Venue
 currentDefaultVenue AssemblyVenueKind = Assembly2
-currentDefaultVenue SmelterVenueKind = SmelterBurner
+currentDefaultVenue SmelterVenueKind = SmelterElectric
 currentDefaultVenue venueKind = case venuesByKind venueKind of
   [ venue ] -> venue
   _ -> error "ambiguous venue"
@@ -1067,15 +1091,31 @@ collectEnhancements = mconcat . map toCumulative where
 
 currentEnhancements ProcessingUnit = [p, s1, p2, p2, p2]
 currentEnhancements GearWheel = [p, p2, p1, p1, s1]
-currentEnhancements ElectronicCircuit = [p, p2, p2, p1, s1]
-currentEnhancements SciencePack3 = [p, p2, p2, p1, s1]
-currentEnhancements SciencePackHighTech = [p, p2, p2, p2, p2]
-currentEnhancements SciencePackProduction = [p, p2, p2, p1, s1]
+--currentEnhancements ElectronicCircuit = [p, p2, p2, p1, s1]
+--currentEnhancements SciencePack3 = [p, p2, p2, p1, s1]
+-- currentEnhancements SciencePackHighTech = [p, p2, p2, p2, p2]
+-- rentEnhancements SciencePackProduction = [p, p2, p2, p2, s1]
 currentEnhancements ResearchNuclearPower = [p1, p1]
 currentEnhancements Plastic = [p2, p2, p2]
 currentEnhancements SciencePackMilitary = [p, p2, p2, p1, s1]
 currentEnhancements SulfuricAcid = [p2, p2, p2]
 currentEnhancements AdvancedCircuit = [p, e1, e1, p1, p1]
+
+-- todo: insert these:
+currentEnhancements EngineUnit = [e1, e1]
+currentEnhancements SciencePack1 = [e1, e1]
+currentEnhancements SciencePack2 = [e1, e1]
+currentEnhancements LightOil = [e1, e1, e1]
+currentEnhancements CopperCable = [e1, e1]
+currentEnhancements PetroleumGas = [e1, e1, e1]
+currentEnhancements IronOre = [e1, e1, e1]
+currentEnhancements CopperOre = [e1, e1, e1]
+
+currentEnhancements SciencePackHighTech = [p, p3, p3, p3, s2]
+currentEnhancements SciencePackProduction = [p, p2, p2, p2, s1]
+currentEnhancements ElectronicCircuit = [p, p2, p2, p2, s1]
+currentEnhancements SciencePack3 = [p, p2, p2, p2, s2]
+
 currentEnhancements _ = []
 
 trivial recipe =
