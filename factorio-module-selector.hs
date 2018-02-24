@@ -23,6 +23,7 @@ import Data.Array(Array, (!), range, Ix)
 import qualified Data.Matrix
 import qualified System.Random
 import Control.Monad
+import Control.Monad.Identity
 import System.IO(stdout, hSetBuffering, BufferMode(..))
 import Control.Parallel.Strategies
 import GHC.Generics
@@ -181,14 +182,18 @@ data ModuleConfig = ModuleConfig
     configProductivityBonus :: Rat,
     configEnergyBonus :: Rat,
     configPollutionBonus :: Rat
-  } deriving Show
+  } deriving (Show, Generic)
 
 data Config = Config
   {
     configVenue :: Venue,
-    configModules :: ModuleConfig
-  }
-    
+    configModules :: ModuleConfig,
+    configModuleMaterials :: [Product]
+  } deriving Generic
+
+
+instance NFData ModuleConfig
+instance NFData Config
 
 speedMultiplier c = (1 + configSpeedBonus x) where x = configModules c
 productivityMultiplier c = 1 + configProductivityBonus x where x = configModules c
@@ -259,7 +264,7 @@ moduleSlots venue = case venue of
         Refinery -> 3
         NoVenue -> 0
 
-availableConfigs :: VenueKind -> Usability -> [((Venue, [Product]), Config)]
+availableConfigs :: VenueKind -> Usability -> [Config]
 availableConfigs venueKind usability =
   let venues = venuesByKind venueKind in
   let availableModules = allModules usability in
@@ -267,7 +272,10 @@ availableConfigs venueKind usability =
     venue <- venues
     modules' <- choose (moduleSlots venue) availableModules
     let (modules, moduleConfig) = mconcat modules'
-    return $ ((venue, modules), Config { configVenue = venue, configModules = moduleConfig })
+    return $ (Config {
+      configVenue = venue,
+      configModules = moduleConfig,
+      configModuleMaterials = modules })
 
 -- in Watt
 data Power =
@@ -321,7 +329,8 @@ currentConfig = \recipe ->
   Config
     {
       configVenue = venue,
-      configModules = mconcat . map moduleToConfig $ modules
+      configModules = mconcat . map moduleToConfig $ modules,
+      configModuleMaterials = modules
     }
 
 scaleTime s (Time t) = Time (s * t)
@@ -708,53 +717,93 @@ evaluateTotalCost f = sum [ (estimate k * v) | (k, v) <- Map.toList f, v /= zero
 
 subtract' a b = add a (minus b)
 
-data RecipeImprovement =
-  RecipeImprovement
-  {
-    recipeImprovement_saving_per_execution :: RawMaterialPressure,
-    recipeImprovement_execution_time :: Time,
-    recipeImprovement_cost_per_execution_per_second :: RawMaterialPressure
-  }
-  deriving Generic
-
-instance NFData RecipeImprovement
 instance NFData Venue
 
-possibleSavings :: Recipe -> [((Venue, [Product]), RecipeImprovement)]
-possibleSavings recipe = (`using` parList rdeepseq) $
+data Assessment = Assessment {
+  totalRawMaterials :: RawMaterialPressure,
+  totalCapitalSeconds :: RawMaterialPressure
+} deriving (Generic, Show)
+
+instance NFData Assessment
+
+instance Linear Assessment where
+  zero = Assessment {
+    totalRawMaterials = zero,
+    totalCapitalSeconds = zero
+    }
+  a `add` b =
+    Assessment
+      {
+        totalRawMaterials = add (totalRawMaterials a) (totalRawMaterials b),
+        totalCapitalSeconds = add (totalCapitalSeconds a) (totalCapitalSeconds b)
+      }
+  minus a = 
+    Assessment
+      {
+        totalRawMaterials = minus (totalRawMaterials a),
+        totalCapitalSeconds = minus (totalCapitalSeconds a)
+      }
+
+instance VectorSpace Assessment where
+  type Scalar Assessment = Rat
+  scale x a =
+    Assessment
+      {
+        totalRawMaterials = scale x (totalRawMaterials a),
+        totalCapitalSeconds = scale x (totalCapitalSeconds a)
+      }
+
+capitalUsePerExecution configs recipe =
+    let config = configs recipe in
+    let Time time = recipeTime recipe in
+    let execution_time = time / (speedMultiplier config * baseSpeed (configVenue config)) in
+    let facility_cost = capitalCost config in
+    scale execution_time facility_cost
+
+type CapitalUse = RawMaterialPressure
+
+assessConfigs' :: (Recipe -> Config) -> Map Product Rat -> (Map RecipeName CapitalUse, Assessment)
+assessConfigs' configs =
+  let solved = (solvedRecipes configs) in
+  \demand -> runIdentity $ do
+    (rawMaterials, executions) <- return $ dot_product_with scale demand solved
+    capitalSeconds <- return $ Map.mapWithKey (\recipeName executions ->
+        let Just recipe = Map.lookup recipeName recipesByName in
+        scale executions (capitalUsePerExecution configs recipe)
+      ) executions
+    return $ (capitalSeconds, Assessment
+      {
+        totalRawMaterials = rawMaterials,
+        totalCapitalSeconds = mconcat' (Map.elems capitalSeconds)
+      })
+
+assessConfigs configs =
+  let a = assessConfigs' configs in
+  \demand -> snd (a demand)
+
+possibleSavings :: Map Product Rat -> Recipe -> [(Config, Assessment)]
+possibleSavings demand recipe = (`using` parListChunk 10 rdeepseq) $
   let venueKind = recipeVenueKind recipe in
+  let assessment_base = assessConfigs currentConfig demand in
   let Time time = recipeTime recipe in
-    [ let saving_per_execution =
-            add
-            (compute_recipe currentConfig recipe)
-            (fmap negate $ compute_recipe (\p -> if p == recipe then config else currentConfig p) recipe)
-      in
-        let execution_time' config = time / (speedMultiplier config * baseSpeed (configVenue config)) in
-        let execution_time_old = execution_time' (currentConfig recipe) in
-        let execution_time = execution_time' config in
-          let
-            modules_cost_per_execution_per_second_old =
-              scale execution_time_old (capitalCost (currentModules recipe))
-          in
-          let
-            modules_cost_per_execution_per_second_new =
-              scale execution_time (capitalCost modules)
-          in
-          let
-            cost_per_execution_per_second =
-              add (modules_cost_per_execution_per_second_new) (minus modules_cost_per_execution_per_second_old)
-          in
-          (modules, RecipeImprovement {
-              recipeImprovement_saving_per_execution = saving_per_execution,
-              recipeImprovement_execution_time = Time execution_time,
-              recipeImprovement_cost_per_execution_per_second = cost_per_execution_per_second })
-      | (modules, config) <- availableConfigs venueKind (usability recipe)]
+    [ let assessment_tip = assessConfigs (\p -> if p == recipe then config else currentConfig p) demand in
+      (config, add assessment_tip (minus assessment_base))
+      | config <- availableConfigs venueKind (usability recipe)]
 
 newtype Rat = Rat Rational deriving (Eq, Ord, Generic, NFData, Linear, Num, Fractional, Real)
 
 instance VectorSpace Rat where
   type Scalar Rat = Rat
   scale (Rat x) (Rat y) = Rat (x * y)
+
+dot_product_with :: (Ord k, Linear a, Linear b, Linear c) => (a -> b -> c) -> Map k a -> Map k b -> c
+dot_product_with f m1 m2 = foldr add zero $ Map.elems $
+  Map.mergeWithKey
+    (\k a b -> Just (f a b))
+    (\_ -> Map.empty)
+    (\_ -> Map.empty)
+    m1
+    m2
 
 instance Show Rat where
   show (Rat x) = printf "%.4f" (fromRational x :: Double)
@@ -785,8 +834,8 @@ venueBuilding venue = case venue of
   NoVenue -> []
   Refinery -> [OilRefinery]
 
-capitalCost (venue, modules) =
-  mconcat' $ map computeTotalCost (modules ++ venueBuilding venue)
+capitalCost config =
+  mconcat' $ map computeTotalCost (configModuleMaterials config ++ venueBuilding (configVenue config))
 
 x = x
 partition_market l
@@ -815,18 +864,18 @@ venueKind_of_venue venue = case venue of
   
 isVenueDefault venue =
   venue == currentDefaultVenue (venueKind_of_venue venue)
-possibleSavings' (Time totalTime) executions_per_second =
+possibleSavings' demand (Time totalTime) =
   let showVenue' venue | isVenueDefault venue = "" | otherwise = "+" in
   [ (recipeName, showVenue' venue ++ (concatMap showModule modules), saving, cost + installationCost)
   | recipe <- recipes
   , recipeName <- return $ recipeName recipe
-  , executions_per_second <- return (executions_per_second recipeName)
-  , ((venue, modules), RecipeImprovement {
-              recipeImprovement_saving_per_execution,
-              recipeImprovement_execution_time,
-              recipeImprovement_cost_per_execution_per_second}) <- possibleSavings recipe
-  , let saving = (totalTime *) $ evaluateTotalCost $ scale executions_per_second recipeImprovement_saving_per_execution
-  , let cost = evaluateTotalCost $ scale executions_per_second recipeImprovement_cost_per_execution_per_second
+  , (config, Assessment {
+              totalRawMaterials,
+              totalCapitalSeconds}) <- possibleSavings demand recipe
+  , let venue = configVenue config
+  , let modules = configModuleMaterials config
+  , let saving = evaluateTotalCost $ minus totalRawMaterials
+  , let cost = evaluateTotalCost $ scale (recip totalTime) totalCapitalSeconds
   ]
 
 installationCost = 1000
@@ -848,7 +897,7 @@ currentRecipeVenue recipe =
   let config = (currentConfig recipe) in
   configVenue config
 
-effectiveExecutionTime recipeName =
+currentEffectiveExecutionTime recipeName =
   let recipe = (recipesByName Map.! recipeName) in
   unTime (recipeTime recipe)
      / (speedMultiplier (currentConfig recipe) * baseSpeed (currentRecipeVenue recipe))
@@ -875,31 +924,43 @@ printTableG l cols =
 
 printRs l = printTableG l rCols
 
-interestingProducts = [Coal, ElectricalEnergy, ChemicalEnergy]
+interestingProducts = []
 
-report =
-  let totalTime = Time (4500) in
-  let futureFactor = 3 in
+
+print_config_details totalTime demand configs =
+  let solved = solvedRecipes configs in
+  let matrix = recipesToMatrix configs in
   let
    (total_cost_per_second, executions_per_second) =
     foldr add zero (
       map
         (\(product, amount) ->
-            scale (recip $ unTime totalTime) (scale amount $ currentSolvedRecipes Map.! product)
+            scale (recip $ unTime totalTime) (scale amount $ solved Map.! product)
             ) desiredMaterials)
   in
-  let savings = possibleSavings' (scale futureFactor totalTime) (lookup0 executions_per_second) in
   let
     negative_executions_per_second =
       filter
        ((<0) . snd)
         (Map.toList executions_per_second)
   in
-   do
-    let (free_money, buys, sells) = partition_market savings
+  let
+   compute_total_cost product =
+    let recipes = fmap fst $ solved in
+    lookup0 recipes product
+  in
+  let
+   effective_execution_time recipeName =
+    let recipe = (recipesByName Map.! recipeName) in
+    unTime (recipeTime recipe)
+       / (speedMultiplier (configs recipe) * baseSpeed (configVenue (configs recipe)))
+  in
+  do
     mapM_ print negative_executions_per_second
     print "total factories:"
-    let factories k = flip fmap (Map.lookup k executions_per_second ) (* effectiveExecutionTime k)
+    let factories k = flip fmap (Map.lookup k executions_per_second) (* effective_execution_time k)
+    let (capital_use_per_recipe, Assessment raw total_capital_use) = assessConfigs' configs demand
+    let scale_capital_use = scale (recip $ unTime totalTime)
     printTableG (sortBy (comparing factories) allRecipeNames) $
       [ ("Name", show)
       , ("Factories", maybe "<none>" show . factories)
@@ -909,11 +970,26 @@ report =
               ProductRecipe product ->
                 show $ evaluateTotalCost $ computeTotalCost product
               _ -> "<complex>")
-      ] ++ flip map interestingProducts (\product -> (show product, (\k -> show $ lookup0 (currentRecipeMatrix Map.! k) product * (lookup0 executions_per_second k))))
+      , ("Capital", (\k -> show $ evaluateTotalCost $ scale_capital_use (lookup0 capital_use_per_recipe k)))
+      ] ++ flip map interestingProducts (\product -> (show product, (\k -> show $ lookup0 (matrix Map.! k) product * (lookup0 executions_per_second k))))
     print "total cost"
     print (scale (unTime totalTime) total_cost_per_second)
-    print "iron plate execs/m"
-    print (60 * executions_per_second Map.! ProductRecipe IronPlate)
+    print "total capital"
+    print (evaluateTotalCost $ scale_capital_use total_capital_use)
+
+report =
+  let mkConfig assembly modules = Config assembly (mconcat $ map moduleToConfig modules) modules in
+  let mkConfigs r config = (\p -> if recipeName p == r then config else currentConfig p) in
+  let futureFactor = 3 in
+  let totalTime = Time (4500 * futureFactor) in
+  let
+   demand =
+    Map.fromList desiredMaterials
+  in
+  let savings = possibleSavings' (scale futureFactor demand) totalTime in
+   do
+    let (free_money, buys, sells) = partition_market savings
+    print_config_details totalTime demand currentConfig
     print "free money"
     printRs (take 20 free_money)
     print "buys"
