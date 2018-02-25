@@ -31,6 +31,7 @@ import qualified Data.Eigen.Matrix
 import Foreign.C.Types
 import qualified Numeric.LinearAlgebra.HMatrix
 import qualified Numeric.LinearAlgebra.Data
+import Control.Arrow
 
 import Matrix
 
@@ -826,7 +827,7 @@ possibleSavings demand recipe = (`using` parListChunk 10 rdeepseq) $
       (config, add assessment_tip (minus assessment_base))
       | config <- availableConfigs venueKind (usability recipe)]
 
-newtype Rat = Rat Rational deriving (Eq, Ord, Generic, NFData, Linear, Num, Fractional, Real)
+newtype Rat = Rat Double deriving (Eq, Ord, Generic, NFData, Linear, Num, Fractional, Real)
 
 instance VectorSpace Rat where
   type Scalar Rat = Rat
@@ -842,7 +843,7 @@ dot_product_with f m1 m2 = foldr add zero $ Map.elems $
     m2
 
 instance Show Rat where
-  show (Rat x) = printf "%.4f" (fromRational x :: Double)
+  show (Rat x) = printf "%.4f" (fromRational $ toRational x :: Double)
 
 showModule SpeedModule = "s1"
 showModule SpeedModule2 = "s2"

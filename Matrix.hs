@@ -78,6 +78,11 @@ instance (Linear a, Linear b) => Linear (a, b) where
   add (a1, b1) (a2, b2) = (add a1 a2, add b1 b2)
   minus (a, b) = (minus a, minus b)
 
+instance Linear Double where
+  zero = 0
+  add = (+)
+  minus x = -x
+
 instance Linear Rational where
   zero = 0
   add = (+)
