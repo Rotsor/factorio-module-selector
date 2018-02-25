@@ -997,7 +997,7 @@ print_config_details totalTime demand configs =
       , ("Capital", (\k -> show $ evaluateTotalCost $ scale_capital_use (lookup0 capital_use_per_recipe k)))
       ] ++ flip map interestingProducts (\product -> (show product, (\k -> show $ lookup0 (matrix Map.! k) product * (lookup0 executions_per_second k))))
     print "total cost"
-    print (scale (unTime totalTime) total_cost_per_second)
+    print $ evaluateTotalCost (scale (unTime totalTime) total_cost_per_second)
     print "total capital"
     print (evaluateTotalCost $ scale_capital_use total_capital_use)
 
@@ -1114,7 +1114,7 @@ currentEnhancements CopperOre = [e1, e1, e1]
 currentEnhancements SciencePackHighTech = [p, p3, p3, p3, s2]
 currentEnhancements SciencePackProduction = [p, p2, p2, p2, s1]
 currentEnhancements ElectronicCircuit = [p, p2, p2, p2, s1]
-currentEnhancements SciencePack3 = [p, p2, p2, p2, s2]
+currentEnhancements SciencePack3 = [p, p2, p2, p2, s1]
 
 currentEnhancements _ = []
 
