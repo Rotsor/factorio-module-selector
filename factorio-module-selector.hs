@@ -232,24 +232,37 @@ moduleToConfig ProductivityModule = ModuleConfig (negate 0.15) 0.04 0.4 0
 moduleToConfig ProductivityModule2 = ModuleConfig (negate 0.15) 0.06 0.6 0
 moduleToConfig ProductivityModule3 = ModuleConfig (negate 0.15) 0.10 0.8 0
 
-allModules :: Usability -> [([Product], ModuleConfig)]
+allModules :: Usability -> [[([Product], ModuleConfig)]]
 allModules usability =
-  [ ([], mempty) ] ++
-  (map (\m -> ([m], moduleToConfig m)) $
-  ([ SpeedModule
+  [[ ([], mempty) ]] ++
+  (map (\ms -> map (\m -> ([m], moduleToConfig m)) ms) $
+  (map return
+  [ SpeedModule
   , EfficiencyModule
-  , EfficiencyModule2
+--  , EfficiencyModule2
 --  , EfficiencyModule3
   , SpeedModule2
 --  , SpeedModule3
   ]
-  ++ case usability of
+  ++ [case usability of
    Unusable ->
      [ ProductivityModule
      , ProductivityModule2
      , ProductivityModule3
      ]
-   Usable -> []))
+   Usable -> []]))
+
+choose' :: Int -> [[a]] -> [[a]]
+choose' k l
+  | k < 0 = []
+  | k == 0 = [[]]
+  | otherwise = case l of
+    [] -> []
+    (xc : xs) -> choose' k xs ++ (do
+      i <- [1..k]
+      (x :: a) <- xc
+      rest <- choose' (k - i) xs
+      return $ replicate i x ++ rest)
 
 choose k l
   | k < 0 = []
@@ -279,7 +292,7 @@ availableConfigs venueKind usability =
   let availableModules = allModules usability in
   do
     venue <- venues
-    modules' <- choose (moduleSlots venue) availableModules
+    modules' <- choose' (moduleSlots venue) availableModules
     let (modules, moduleConfig) = mconcat modules'
     return $ (Config {
       configVenue = venue,
