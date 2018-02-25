@@ -32,6 +32,7 @@ import Foreign.C.Types
 import qualified Numeric.LinearAlgebra.HMatrix
 import qualified Numeric.LinearAlgebra.Data
 import Control.Arrow
+import GHC.Stack
 
 import Matrix
 
@@ -88,6 +89,7 @@ data Product =
   | Sulfur
   | SulfuricAcid
   | CoalLiquefaction
+  | LabWorkSecond
   | ResearchCoalLiquefaction
   | ResearchLaserTurretDamage5
   | ResearchRocketSilo
@@ -191,7 +193,10 @@ data ModuleConfig = ModuleConfig
     configProductivityBonus :: Rat,
     configEnergyBonus :: Rat,
     configPollutionBonus :: Rat
-  } deriving (Show, Generic)
+  } deriving (Eq, Ord, Show, Generic)
+
+-- venue and modules
+type PreConfig = (Venue, [Product])
 
 data Config = Config
   {
@@ -233,10 +238,10 @@ moduleToConfig ProductivityModule = ModuleConfig (negate 0.15) 0.04 0.4 0
 moduleToConfig ProductivityModule2 = ModuleConfig (negate 0.15) 0.06 0.6 0
 moduleToConfig ProductivityModule3 = ModuleConfig (negate 0.15) 0.10 0.8 0
 
-allModules :: Usability -> [[([Product], ModuleConfig)]]
+allModules :: Usability -> [[[Product]]]
 allModules usability =
-  [[ ([], mempty) ]] ++
-  (map (\ms -> map (\m -> ([m], moduleToConfig m)) ms) $
+  [[ ([]) ]] ++
+  (map (\ms -> map (\m -> [m]) ms) $
   (map return
   [ SpeedModule
   , EfficiencyModule
@@ -287,18 +292,12 @@ moduleSlots venue = case venue of
         Refinery -> 3
         NoVenue -> 0
 
-availableConfigs :: VenueKind -> Usability -> [Config]
-availableConfigs venueKind usability =
-  let venues = venuesByKind venueKind in
-  let availableModules = allModules usability in
-  do
-    venue <- venues
-    modules' <- choose' (moduleSlots venue) availableModules
-    let (modules, moduleConfig) = mconcat modules'
-    return $ (Config {
-      configVenue = venue,
-      configModules = moduleConfig,
-      configModuleMaterials = modules })
+
+initial_module_config gc Miner = mempty { configProductivityBonus = gc_miner_productivity_bonus gc }
+initial_module_config _ _ = mempty
+
+mkConfig gc (venue, modules) =
+  Config venue (mconcat $ initial_module_config gc venue : map moduleToConfig modules) modules
 
 -- in Watt
 data Power =
@@ -334,30 +333,18 @@ basePollution SolarFacility = 0
 basePollution SteamEngine = 0
 basePollution NoVenue = 0
 
-labUpgrades = 1.5 -- +20% +30%
-
-baseSpeed SolarFacility = 1
-baseSpeed Assembly2 = 0.75
-baseSpeed Assembly3 = 1.25
-baseSpeed Miner = 1 -- factored in into the recipe -- CR-someday: take productivity upgrades into account
-baseSpeed SmelterElectric = 2
-baseSpeed SmelterBurner = 2
-baseSpeed Chemical = 1.25
-baseSpeed Lab = labUpgrades
-baseSpeed Boiler = 1 -- this is factored into the recipe
-baseSpeed SteamEngine = 1 -- this is factored into the recipe
-baseSpeed Refinery = 1
-baseSpeed NoVenue = 1 -- this is meaningless
-
-currentConfig :: Recipe -> Config
-currentConfig = \recipe ->
-  let (venue, modules) = currentModules recipe in
-  Config
-    {
-      configVenue = venue,
-      configModules = mconcat . map moduleToConfig $ modules,
-      configModuleMaterials = modules
-    }
+baseSpeed _ SolarFacility = 1
+baseSpeed _ Assembly2 = 0.75
+baseSpeed _ Assembly3 = 1.25
+baseSpeed _ Miner = 1 -- factored in into the recipe; productivity upgrade taken into account separately
+baseSpeed _ SmelterElectric = 2
+baseSpeed _ SmelterBurner = 2
+baseSpeed _ Chemical = 1.25
+baseSpeed config Lab = 2.4
+baseSpeed _ Boiler = 1 -- this is factored into the recipe
+baseSpeed _ SteamEngine = 1 -- this is factored into the recipe
+baseSpeed _ Refinery = 1
+baseSpeed _ NoVenue = 1 -- this is meaningless
 
 scaleTime s (Time t) = Time (s * t)
 
@@ -378,7 +365,7 @@ data RecipeName =
   | AdvancedOilProcessing
   | BoilerRecipe
   | UseAsFuelRecipe Product
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Generic)
 
 instance Show RecipeName where
   show (ProductRecipe product) = show product
@@ -389,18 +376,137 @@ instance Show RecipeName where
 
 energy_per_steam = 30000
 
-recipes :: [Recipe]
+data ResearchCost = ResearchCost {
+  researchCostTime :: Time, -- time to process 1 stack of bottles
+  researchCostBottles :: [Product],
+  researchCostAmount :: Rat
+}
+
+marathon_research_cost_adjustment = 4.0
+
+lab_speed_researches :: [(ResearchCost, Rat)]
+lab_speed_researches =
+  let r = SciencePack1 in
+  let g = SciencePack2 in
+  let b = SciencePack3 in
+  let p = SciencePackProduction in
+  let y = SciencePackHighTech in
+  let bot l amount =  ResearchCost (Time 30) l (amount * marathon_research_cost_adjustment) in
+  (bot [r, g] 100, 0.20)
+  : (bot [r, g] 200, 0.30)
+  : (bot [r, g, b] 250, 0.40)
+  : (bot [r, g, b] 500, 0.50)
+  : (bot [r, g, b, p] 500, 0.50)
+  : (bot [r, g, b, p, y] 500, 0.60)
+  : error "further lab researches unknown"
+
+mining_productivity_researches :: [(ResearchCost, Rat)]
+mining_productivity_researches =
+  let r = SciencePack1 in
+  let g = SciencePack2 in
+  let b = SciencePack3 in
+  let p = SciencePackProduction in
+  let y = SciencePackHighTech in
+  zipWith
+    (\colors amounts -> (ResearchCost (Time 60) colors (amounts * 4), 0.02))
+    (replicate 3 [r, g] ++ replicate 4 [r, g, b] ++ replicate 4 [r, g, b, p] ++ replicate 4 [r, g, b, p, y])
+    (map fromIntegral [100, 200..]) ++ error "further mining productivity unknown"
+
+computeResearchCapital :: Int -> [(ResearchCost, Rat)] -> Map Product Rat
+computeResearchCapital n = mconcat' . map (\r -> scale (researchCostAmount r) (Map.fromListWith (+) $ map (\p -> (p, 1)) (researchCostBottles r))) . map fst . take n
+
+data SmeltingMode =
+  BurnerSmelting
+  | ElectricSmelting
+
+data Liquefaction_mode =
+  Liquefaction_disabled
+  | Liquefaction_to_gas
+  | Liquefaction_to_burn
+   deriving (Show, Generic)
+
+class Enumerate a where
+  allOfThem :: [a]
+
+instance Enumerate Liquefaction_mode where
+  allOfThem =
+   [ Liquefaction_disabled
+   , Liquefaction_to_gas
+   , Liquefaction_to_burn
+   ]
+
+-- the details of GameConfig sufficient to determine what recipes are available
+data GameConfigQualitative = GameConfigQualitative {
+  qgc_liquefaction :: Liquefaction_mode
+  }
+
+to_qualitative (GameConfig { gc_liquefaction = liquefaction }) = GameConfigQualitative { qgc_liquefaction = liquefaction }
+
+data GameConfig = GameConfig {
+  gc_lab_researches_done :: Int, -- TODO: propose research
+  gc_mining_researches_done :: Int, -- TODO: propose research
+  gc_liquefaction :: Liquefaction_mode,
+  gc_recipe_configs :: RecipeName -> PreConfig
+  }
+  deriving Generic
+
+data Change =
+  ProductChange RecipeName PreConfig
+  | Other String String
+  deriving Generic
+
+instance NFData Change
+instance NFData GameConfig
+instance NFData Liquefaction_mode
+instance NFData RecipeName
+
+gc_alternatives :: GameConfig -> [(Change, GameConfig)]
+gc_alternatives gc =
+  [(Other "Liquefaction Mode" (show mode), gc { gc_liquefaction = mode }) | mode <- allOfThem] ++
+  [(Other "Mining productivity" "+1", gc { gc_lab_researches_done = gc_lab_researches_done gc + 1 }) ] ++
+  [(Other "Mining productivity" "+1", gc { gc_mining_researches_done = gc_mining_researches_done gc + 1 }) ] ++
+  [(ProductChange recipeName config, gc { gc_recipe_configs = f' })
+  | (recipe, _) <- recipes
+  , recipeName <- [ recipeName recipe ]
+  , venue <- venuesByKind (recipeVenueKind recipe)
+  , let availableModules = allModules (usability recipeName)
+  , modules <- choose' (moduleSlots venue) availableModules
+  , modules <- [ concat modules ]
+  , let config = (venue, modules)
+  , let f' = (let f = gc_recipe_configs gc in (\r -> if r == recipeName then config else f r))
+  ]
+
+gc_lab_speed_multiplier :: GameConfig -> Rat
+gc_lab_speed_multiplier t = 1 +
+  (mconcat' $ map snd $ take (gc_lab_researches_done t) lab_speed_researches)
+
+gc_miner_productivity_bonus :: GameConfig -> Rat
+gc_miner_productivity_bonus t =
+  (mconcat' $ map snd $ take (gc_mining_researches_done t) mining_productivity_researches)
+
+gc_configs :: GameConfig -> (Recipe -> Config)
+gc_configs gc =
+ \recipe ->
+ let pre = gc_recipe_configs gc (recipeName recipe) in
+ mkConfig gc pre
+
+-- recipes and whether or not they should be enabled
+recipes :: [(Recipe, (GameConfigQualitative -> Bool))]
 recipes =
   let assembly = AssemblyVenueKind in
   let smelter = SmelterVenueKind in
-  [
+  let
+   miner what ingredients speed =
+     [ (Recipe (ProductRecipe what) [(what, 1)] ingredients MinerVenueKind (Time $ recip speed), const True) ]
+  in
+  concat [
     r GearWheel 1 [(IronPlate, 4)] assembly (Time 0.5),
     r IronPlate 1 [(IronOre, 1)] smelter (Time 3.5),
     r CopperPlate 1 [(CopperOre, 1)] smelter (Time 3.5),
     r SteelPlate 1 [(IronPlate, 10)] smelter (Time 35),
-    r IronOre 1[(BuriedIron, 1)] MinerVenueKind (Time (1/0.525)),
-    r CopperOre 1[(BuriedCopper, 1)] MinerVenueKind (Time (1/0.525)),
-    r Coal 1 [(BuriedCoal, 1)] MinerVenueKind (Time (1/0.525)),
+    miner IronOre [(BuriedIron, 1)] 0.525,
+    miner CopperOre [(BuriedCopper, 1)] 0.525,
+    miner Coal [(BuriedCoal, 1)] 0.525,
     r Plastic 2[(PetroleumGas, 20), (Coal, 1)] ChemicalVenueKind (Time 1),
     r ElectronicCircuit 1 [(CopperCable, 10), (IronPlate, 2)] assembly (Time 0.5),
     r AdvancedCircuit 1 [(Plastic, 4), (CopperCable, 8), (ElectronicCircuit, 2)] assembly (Time 6),
@@ -449,7 +555,7 @@ recipes =
     r ElectricFurnace 1 [(AdvancedCircuit, 5), (SteelPlate, 10), (StoneBrick, 10)] assembly (Time 5),
     r ElectricEngineUnit 1 [(ElectronicCircuit, 2), (EngineUnit, 1), (Lubricant, 15)] assembly (Time 10),
     r StoneBrick 1 [(Stone, 2)] smelter (Time 3.5),
-    r Stone 1 [(BuriedStone, 1)] MinerVenueKind (Time 0.65),
+    miner Stone [(BuriedStone, 1)] 0.65,
     r Lubricant 10 [(HeavyOil, 10)] ChemicalVenueKind (Time 1),
     r LaserTurret 1 [(Battery, 12), (ElectronicCircuit, 20), (SteelPlate, 20)] assembly (Time 20),
     r Battery 1[(CopperPlate, 1), (IronPlate, 1), (SulfuricAcid, 40)] ChemicalVenueKind (Time 5),
@@ -461,9 +567,7 @@ recipes =
     r StoneFurnace 1 [(Stone, 5)] assembly (Time 0.5),
     r SteamEngineBuilding 1 [(GearWheel, 10), (IronPlate, 50), (Pipe, 5)] assembly (Time 0.5),
     
-    Recipe BoilerRecipe [(Steam, (baseBoilerPower * 0.5) / energy_per_steam)] [] BoilerVenueKind (Time 1),
---    Recipe (UseAsFuelRecipe SolidFuel) [(Steam, (25e6 * 0.5) / energy_per_steam)] [(SolidFuel, 1)] BoilerVenueKind (Time 1), -- incorrect time, but nothing cares
-    Recipe (UseAsFuelRecipe Coal) [(ChemicalEnergy, 8e6)] [(Coal, 1)] NoVenueVenueKind (Time 1), -- time is meaningless here
+    [ (Recipe BoilerRecipe [(Steam, (baseBoilerPower * 0.5) / energy_per_steam)] [] BoilerVenueKind (Time 1), const True) ],
 --    r ElectricalEnergy 1 [(Steam, 1/energy_per_steam)] SteamEngineVenueKind (Time (1/900e3)),
     r ElectricalEnergy (42e3 * 176) [] SolarPowerVenueKind (Time 1),
     r SolarFacilityBuilding 1 [(SolarPanel, 176), (Accumulator, 166), (Substation, 10), (Roboport, 1)] NoVenueVenueKind (Time 1),
@@ -475,11 +579,23 @@ recipes =
     r PetroleumGas 2 [(LightOil, 3)] ChemicalVenueKind (Time 5),
     
     r SolidFuel 1 [(LightOil, 10)] ChemicalVenueKind (Time 3),
-    r LightOil 3[(HeavyOil, 4)] ChemicalVenueKind (Time 5),
-    Recipe AdvancedOilProcessing [(HeavyOil, 10), (LightOil, 45), (PetroleumGas, 55)] [(CrudeOil, 100)] RefineryVenueKind (Time 5)
---    Recipe LiquefactionRecipe [(HeavyOil, 35), (LightOil, 15), (PetroleumGas, 20)] [(Coal, 10), (HeavyOil, 25), (Steam, 50)] RefineryVenueKind (Time 5)
+    r LightOil 3 [(HeavyOil, 4)] ChemicalVenueKind (Time 5),
+    [ (Recipe AdvancedOilProcessing [(HeavyOil, 10), (LightOil, 45), (PetroleumGas, 55)] [(CrudeOil, 100)] RefineryVenueKind (Time 5), const True) ],
+    (
+    let
+     burn_coal =
+      Recipe (UseAsFuelRecipe Coal) [(ChemicalEnergy, 8e6)] [(Coal, 1)] NoVenueVenueKind (Time 1) -- time is meaningless here
+     liquefaction =
+      Recipe LiquefactionRecipe [(HeavyOil, 35), (LightOil, 15), (PetroleumGas, 20)] [(Coal, 10), (HeavyOil, 25), (Steam, 50)] RefineryVenueKind (Time 5)
+     burn_bricks =
+      Recipe (UseAsFuelRecipe SolidFuel) [(Steam, (25e6 * 0.5) / energy_per_steam)] [(SolidFuel, 1)] BoilerVenueKind (Time 1) -- incorrect time, but nothing cares
+    in
+    [ (burn_coal, (\gc -> case qgc_liquefaction gc of { Liquefaction_to_burn -> False; _ -> True }))
+    , (burn_bricks, (\gc -> case qgc_liquefaction gc of { Liquefaction_to_burn -> True; _ -> False }))
+    , (liquefaction, (\gc -> case qgc_liquefaction gc of { Liquefaction_disabled -> False; _ -> True }))
+    ])
   ] where
-  r product quantity ingredients venues time = Recipe (ProductRecipe product) [(product, quantity)] ingredients venues time
+  r product quantity ingredients venues time = [ (Recipe (ProductRecipe product) [(product, quantity)] ingredients venues time, const True) ]
 
 mconcat' x = foldr add zero x
 
@@ -487,17 +603,21 @@ functionToMatrix :: (Num v, Ix' b, Ix' a) => (a -> [(b, v)]) -> Matrix a b v
 functionToMatrix f =
   Matrix (Array.array fullRange [ ((a, b), maybe 0 id (Map.lookup b bs)) | a <- range fullRange, let bs = Map.fromListWith (+) (f a), b <- range fullRange])
 
-recipesByName = Map.fromListWith (error "multiple recipes with the same name") (map (\recipe -> (recipeName recipe, recipe)) recipes)
+recipesByName = Map.fromListWith (error "multiple recipes with the same name") (map (\(recipe, _enabled) -> (recipeName recipe, recipe)) (recipes))
 
-recipesToMatrix :: (Recipe -> Config) -> Map RecipeName (Map Product Rat)
-recipesToMatrix configs = 
-  fmap (\recipe@(Recipe _recipeName production consumption venueKind (Time time)) ->
+enabledRecipesByName gc =
+  Map.fromListWith (error "multiple recipes with the same name") (concatMap (\(recipe, enabled) -> if not (enabled gc) then [] else [(recipeName recipe, recipe)]) (recipes))
+
+recipesToMatrix :: GameConfig -> Map RecipeName (Map Product Rat)
+recipesToMatrix gc = 
+  fmap (\recipe@(Recipe recipeName production consumption venueKind (Time time)) ->
          (
-         let config = configs recipe in
+         let preConfig = gc_recipe_configs gc recipeName in
+         let config = mkConfig gc preConfig in
          let venue = configVenue config in
            let
              energy_and_pollution =
-               let multiplier = (time / (speedMultiplier config * baseSpeed venue)) * energyMultiplier config in
+               let multiplier = (time / (speedMultiplier config * baseSpeed gc venue)) * energyMultiplier config in
                let pollution = basePollution venue in
                case basePower venue of
                  ElectricalPower basePower ->
@@ -506,7 +626,7 @@ recipesToMatrix configs =
                    [(ChemicalEnergy, basePower * multiplier), (Pollution, pollution * multiplier)]
            in
              Map.fromListWith add (fmap (second negate) (consumption ++ energy_and_pollution) ++ map (second ((* productivityMultiplier config))) production)
-         )) recipesByName
+         )) (enabledRecipesByName (to_qualitative gc))
 
 instance (Ix' a, Ix' b) => Enum (a, b) where
   fromEnum (x, (y :: b)) = fromEnum x * Array.rangeSize (fullRange :: (b, b)) + fromEnum y
@@ -615,33 +735,33 @@ matrix_to_sparse (Matrix m) =
 type RawProduct = Product
 
 solvedRecipes
-  :: (Recipe -> Config)
+  :: GameConfig
      -> Map Product (Map RawProduct Rat, Map RecipeName Rat)
-solvedRecipes configs =
-  find_kernel_with_trace (/) (*) (recipesToMatrix configs)
+solvedRecipes gc =
+  find_kernel_with_trace (/) (*) (recipesToMatrix gc)
 
-currentSolvedRecipes = solvedRecipes currentConfig
-currentRecipeMatrix = recipesToMatrix currentConfig
+currentSolvedRecipes = solvedRecipes current_game_config
+currentRecipeMatrix = recipesToMatrix current_game_config
 
 vector_lookup :: Ix' a => Vector a v -> a -> v
 vector_lookup (Matrix x) a = x ! (a, ())
 
-compute'_new :: (Recipe -> Config) -> Product -> RawMaterialPressure
-compute'_new configs =
-  let recipes = fmap fst $ solvedRecipes configs in
+compute'_new :: GameConfig -> Product -> RawMaterialPressure
+compute'_new gc =
+  let recipes = fmap fst $ solvedRecipes gc in
    \product -> case Map.lookup product recipes of
      Nothing -> Map.empty
      Just m -> m
 
-compute_recipe config =
-  let compute = compute'_new config in
+compute_recipe gc =
+  let compute = compute'_new gc in
     \recipe ->
       mconcat'
         [ scale quantity (compute product)
         | (product, quantity) <- recipeProducts recipe
         ]
 
-compute' f = compute'_new f
+compute' gc = compute'_new gc
 
 data SparseMatrix a b v = SparseMatrix [(a, Map b v)]
 
@@ -656,7 +776,7 @@ instance (Linear v, Ix' a, Ix' b) => Linear (Matrix a b v) where
   minus = fmap minus
 
 computeTotalCost :: Product -> RawMaterialPressure
-computeTotalCost = compute' currentConfig
+computeTotalCost = compute' current_game_config
 
 usability' GearWheel = Unusable
 usability' IronPlate = Unusable
@@ -732,8 +852,8 @@ usability' Substation = Usable
 usability' Roboport = Usable
 usability' x = error $ "undefined usability: " ++ show x
 
-usability recipe =
-  case recipeName recipe of
+usability recipeName =
+  case recipeName of
     ProductRecipe product -> usability' product
     LiquefactionRecipe -> Unusable
     AdvancedOilProcessing -> Unusable
@@ -758,7 +878,8 @@ instance NFData Venue
 
 data Assessment = Assessment {
   totalRawMaterials :: RawMaterialPressure,
-  totalCapitalSeconds :: RawMaterialPressure
+  totalCapitalSeconds :: RawMaterialPressure,
+  totalCapital :: RawMaterialPressure
 } deriving (Generic, Show)
 
 instance NFData Assessment
@@ -766,19 +887,22 @@ instance NFData Assessment
 instance Linear Assessment where
   zero = Assessment {
     totalRawMaterials = zero,
-    totalCapitalSeconds = zero
+    totalCapitalSeconds = zero,
+    totalCapital = zero
     }
   a `add` b =
     Assessment
       {
         totalRawMaterials = add (totalRawMaterials a) (totalRawMaterials b),
-        totalCapitalSeconds = add (totalCapitalSeconds a) (totalCapitalSeconds b)
+        totalCapitalSeconds = add (totalCapitalSeconds a) (totalCapitalSeconds b),
+        totalCapital = add (totalCapital a) (totalCapital b)
       }
   minus a = 
     Assessment
       {
         totalRawMaterials = minus (totalRawMaterials a),
-        totalCapitalSeconds = minus (totalCapitalSeconds a)
+        totalCapitalSeconds = minus (totalCapitalSeconds a),
+        totalCapital = minus (totalCapital a)
       }
 
 instance VectorSpace Assessment where
@@ -787,45 +911,44 @@ instance VectorSpace Assessment where
     Assessment
       {
         totalRawMaterials = scale x (totalRawMaterials a),
-        totalCapitalSeconds = scale x (totalCapitalSeconds a)
+        totalCapitalSeconds = scale x (totalCapitalSeconds a),
+        totalCapital = scale x (totalCapital a)
       }
 
-capitalUsePerExecution configs recipe =
-    let config = configs recipe in
+capitalUsePerExecution gc recipe =
+    let config = gc_configs gc recipe in
     let Time time = recipeTime recipe in
-    let execution_time = time / (speedMultiplier config * baseSpeed (configVenue config)) in
+    let execution_time = time / (speedMultiplier config * baseSpeed gc (configVenue config)) in
     let facility_cost = capitalCost config in
     scale execution_time facility_cost
 
 type CapitalUse = RawMaterialPressure
 
-assessConfigs' :: (Recipe -> Config) -> Map Product Rat -> (Map RecipeName CapitalUse, Assessment)
-assessConfigs' configs =
-  let solved = (solvedRecipes configs) in
+computeTotalCost_multi :: Map Product Rat -> RawMaterialPressure
+computeTotalCost_multi = mconcat' . map (\(product, amount) -> scale amount (computeTotalCost product)) . Map.toList
+
+assess_gc' :: GameConfig -> Map Product Rat -> (Map RecipeName CapitalUse, Assessment)
+assess_gc' gc =
+  let solved = solvedRecipes gc in
+  let rbn = enabledRecipesByName (to_qualitative gc) in
   \demand -> runIdentity $ do
     (rawMaterials, executions) <- return $ dot_product_with scale demand solved
     capitalSeconds <- return $ Map.mapWithKey (\recipeName executions ->
-        let Just recipe = Map.lookup recipeName recipesByName in
-        scale executions (capitalUsePerExecution configs recipe)
+        let Just recipe = Map.lookup recipeName rbn in
+        scale executions (capitalUsePerExecution gc recipe)
       ) executions
+    labResearchCapital <- return $ computeResearchCapital (gc_lab_researches_done gc) lab_speed_researches
+    miningResearchCapital <- return $ computeResearchCapital (gc_mining_researches_done gc) mining_productivity_researches
     return $ (capitalSeconds, Assessment
       {
         totalRawMaterials = rawMaterials,
-        totalCapitalSeconds = mconcat' (Map.elems capitalSeconds)
+        totalCapitalSeconds = mconcat' (Map.elems capitalSeconds),
+        totalCapital = computeTotalCost_multi (mconcat' [labResearchCapital, miningResearchCapital])
       })
 
-assessConfigs configs =
-  let a = assessConfigs' configs in
+assess_gc configs =
+  let a = assess_gc' configs in
   \demand -> snd (a demand)
-
-possibleSavings :: Map Product Rat -> Recipe -> [(Config, Assessment)]
-possibleSavings demand recipe = (`using` parListChunk 10 rdeepseq) $
-  let venueKind = recipeVenueKind recipe in
-  let assessment_base = assessConfigs currentConfig demand in
-  let Time time = recipeTime recipe in
-    [ let assessment_tip = assessConfigs (\p -> if p == recipe then config else currentConfig p) demand in
-      (config, add assessment_tip (minus assessment_base))
-      | config <- availableConfigs venueKind (usability recipe)]
 
 newtype Rat = Rat Double deriving (Eq, Ord, Generic, NFData, Linear, Num, Fractional, Real)
 
@@ -875,7 +998,6 @@ venueBuilding venue = case venue of
 capitalCost config =
   mconcat' $ map computeTotalCost (configModuleMaterials config ++ venueBuilding (configVenue config))
 
-x = x
 partition_market l
   =
   ( p (\(gain, cost) -> gain >= 0 && cost <= 0) (\(gain, cost) -> gain - cost) -- free money
@@ -883,9 +1005,9 @@ partition_market l
   , p (\(gain, cost) -> gain < 0 && cost < 0) (\(gain, cost) -> gain / cost)
   ) where
   p predicate order = sortBy (comparing (order . extractGL)) $ filter (predicate . extractGL) l
-  extractGL (_, _, gain, cost) = (gain, cost)
+  extractGL (_, gain, cost) = (gain, cost)
 
-allRecipeNames = [recipeName recipe | recipe <- recipes]
+allRecipeNames qgc = [recipeName recipe | (recipe, check) <- recipes, check qgc]
 
 venueKind_of_venue venue = case venue of
   Assembly2 -> AssemblyVenueKind
@@ -902,18 +1024,39 @@ venueKind_of_venue venue = case venue of
   
 isVenueDefault venue =
   venue == currentDefaultVenue (venueKind_of_venue venue)
+
+possibleSavings :: RawMaterialPressure -> GameConfig -> [(Change, GameConfig, Assessment)]
+possibleSavings demand gc =
+  let assessment_base = assess_gc gc demand in
+  let
+   assess_diff gc' =
+    let assessment_tip = assess_gc gc' demand in
+    add assessment_tip (minus assessment_base)
+  in
+   (`using` parListChunk 10 rdeepseq) $ map (\(change, config) -> (change, config, assess_diff config)) (gc_alternatives gc)
+
+showChange :: Change -> (String, String)
+showChange (ProductChange product (venue, modules)) =
+    let
+     showVenue SmelterElectric = "+"
+     showVenue SmelterBurner = "-"
+     showVenue Assembly2 = "-"
+     showVenue Assembly3 = "+"
+     showVenue venue | isVenueDefault venue = "" | otherwise = "??"
+    in
+    (show product, showVenue venue ++ (concatMap showModule modules))
+showChange (Other a b) = (a, b)  
+
+
 possibleSavings' demand (Time totalTime) =
-  let showVenue' venue | isVenueDefault venue = "" | otherwise = "+" in
-  [ (recipeName, showVenue' venue ++ (concatMap showModule modules), saving, cost + installationCost)
-  | recipe <- recipes
-  , recipeName <- return $ recipeName recipe
-  , (config, Assessment {
+  -- CR aalekseyev: prevent [installationCost] from being displayed
+  [ (showChange change, saving, cost + installationCost)
+  | (change, gc, Assessment {
               totalRawMaterials,
-              totalCapitalSeconds}) <- possibleSavings demand recipe
-  , let venue = configVenue config
-  , let modules = configModuleMaterials config
+              totalCapitalSeconds,
+              totalCapital}) <- possibleSavings demand current_game_config
   , let saving = evaluateTotalCost $ minus totalRawMaterials
-  , let cost = evaluateTotalCost $ scale (recip totalTime) totalCapitalSeconds
+  , let cost = evaluateTotalCost $ add (scale (recip totalTime) totalCapitalSeconds) totalCapital
   ]
 
 installationCost = 1000
@@ -932,20 +1075,20 @@ lookup0 m k = case Map.lookup k m of
   Just x -> x
 
 currentRecipeVenue recipe =
-  let config = (currentConfig recipe) in
+  let config = (gc_configs current_game_config recipe) in
   configVenue config
 
 currentEffectiveExecutionTime recipeName =
-  let recipe = (recipesByName Map.! recipeName) in
+  let recipe = (enabledRecipesByName (to_qualitative current_game_config) !!! recipeName) in
   unTime (recipeTime recipe)
-     / (speedMultiplier (currentConfig recipe) * baseSpeed (currentRecipeVenue recipe))
+     / (speedMultiplier (gc_configs current_game_config recipe) * baseSpeed current_game_config (currentRecipeVenue recipe))
 
 rCols =
-  [ ("Efficiency", (\(_, _, gain, cost) -> show (gain / cost)))
-  , ("Name", (\(name, _, _, _) -> show name))
-  , ("Mod", (\(_, mod, _, _) -> show mod))
-  , ("Gain", (\(_, _, gain, _) -> show gain))
-  , ("Cost", (\(_, _, _, cost) -> show cost))
+  [ ("Efficiency", (\(_, gain, cost) -> show (gain / cost)))
+  , ("Name", (\((name, _), _, _) -> name))
+  , ("Mod", (\((_, mod), _, _) -> mod))
+  , ("Gain", (\(_, gain, _) -> show gain))
+  , ("Cost", (\(_, _, cost) -> show cost))
   ]
 
 pad n l = replicate (n - length l) ' ' ++ l
@@ -964,16 +1107,15 @@ printRs l = printTableG l rCols
 
 interestingProducts = []
 
-
-print_config_details totalTime demand configs =
-  let solved = solvedRecipes configs in
-  let matrix = recipesToMatrix configs in
+print_config_details totalTime demand gc =
+  let solved = solvedRecipes gc in
+  let matrix = recipesToMatrix gc in
   let
    (total_cost_per_second, executions_per_second) =
     foldr add zero (
       map
         (\(product, amount) ->
-            scale (recip $ unTime totalTime) (scale amount $ solved Map.! product)
+            scale (recip $ unTime totalTime) (scale amount $ solved !!! product)
             ) desiredMaterials)
   in
   let
@@ -989,17 +1131,17 @@ print_config_details totalTime demand configs =
   in
   let
    effective_execution_time recipeName =
-    let recipe = (recipesByName Map.! recipeName) in
+    let recipe = (enabledRecipesByName (to_qualitative gc)  !!! recipeName) in
     unTime (recipeTime recipe)
-       / (speedMultiplier (configs recipe) * baseSpeed (configVenue (configs recipe)))
+       / (speedMultiplier (gc_configs gc recipe) * baseSpeed gc (configVenue (gc_configs gc recipe)))
   in
   do
     mapM_ print negative_executions_per_second
     print "total factories:"
     let factories k = flip fmap (Map.lookup k executions_per_second) (* effective_execution_time k)
-    let (capital_use_per_recipe, Assessment raw total_capital_use) = assessConfigs' configs demand
+    let (capital_use_per_recipe, Assessment raw total_capital_use total_capital_oneoff) = assess_gc' gc demand
     let scale_capital_use = scale (recip $ unTime totalTime)
-    printTableG (sortBy (comparing factories) allRecipeNames) $
+    printTableG (sortBy (comparing factories) (allRecipeNames currentQGC)) $
       [ ("Name", show)
       , ("Factories", maybe "<none>" show . factories)
       , ("Price",
@@ -1009,15 +1151,15 @@ print_config_details totalTime demand configs =
                 show $ evaluateTotalCost $ computeTotalCost product
               _ -> "<complex>")
       , ("Capital", (\k -> show $ evaluateTotalCost $ scale_capital_use (lookup0 capital_use_per_recipe k)))
-      ] ++ flip map interestingProducts (\product -> (show product, (\k -> show $ lookup0 (matrix Map.! k) product * (lookup0 executions_per_second k))))
+      ] ++ flip map interestingProducts (\product -> (show product, (\k -> show $ lookup0 (matrix !!! k) product * (lookup0 executions_per_second k))))
     print "total cost"
     print $ evaluateTotalCost (scale (unTime totalTime) total_cost_per_second)
-    print "total capital"
+    print "total production capital"
     print (evaluateTotalCost $ scale_capital_use total_capital_use)
+    print "total research capital"
+    print (evaluateTotalCost $ total_capital_oneoff)
 
 report =
-  let mkConfig assembly modules = Config assembly (mconcat $ map moduleToConfig modules) modules in
-  let mkConfigs r config = (\p -> if recipeName p == r then config else currentConfig p) in
   let futureFactor = 3 in
   let totalTime = Time (4500 * futureFactor) in
   let
@@ -1027,7 +1169,7 @@ report =
   let savings = possibleSavings' (scale futureFactor demand) totalTime in
    do
     let (free_money, buys, sells) = partition_market savings
-    print_config_details totalTime demand currentConfig
+    print_config_details totalTime demand current_game_config
     print "free money"
     printRs (take 20 free_money)
     print "buys"
@@ -1109,13 +1251,15 @@ currentEnhancements GearWheel = [p, p2, p1, p1, s1]
 --currentEnhancements SciencePack3 = [p, p2, p2, p1, s1]
 -- currentEnhancements SciencePackHighTech = [p, p2, p2, p2, p2]
 -- rentEnhancements SciencePackProduction = [p, p2, p2, p2, s1]
-currentEnhancements ResearchNuclearPower = [p1, p1]
+-- currentEnhancements ResearchNuclearPower = [p1, p1]
 currentEnhancements Plastic = [p2, p2, p2]
 currentEnhancements SciencePackMilitary = [p, p2, p2, p1, s1]
 currentEnhancements SulfuricAcid = [p2, p2, p2]
 currentEnhancements AdvancedCircuit = [p, e1, e1, p1, p1]
 
 -- todo: insert these:
+currentEnhancements ResearchNuclearPower = [p2, p2]
+
 currentEnhancements EngineUnit = [e1, e1]
 currentEnhancements SciencePack1 = [e1, e1]
 currentEnhancements SciencePack2 = [e1, e1]
@@ -1135,26 +1279,48 @@ currentEnhancements _ = []
 trivial recipe =
   (currentDefaultVenue (recipeVenueKind recipe), [])
 
-currentModules recipe =
-  case recipeName recipe of
-    ProductRecipe product ->
-      let enhancements = collectEnhancements $ currentEnhancements product in
-      let
-        venue =
-          fromMaybe
-            (currentDefaultVenue (recipeVenueKind recipe))
-            (cumulativeEnhancementVenue enhancements)
-      in
-      (venue, cumulativeEnhancementModules enhancements)
-    LiquefactionRecipe -> trivial recipe
-    AdvancedOilProcessing ->
-      ((currentDefaultVenue (recipeVenueKind recipe)), cumulativeEnhancementModules (collectEnhancements [e1, e1, e1]))
-    _ -> trivial recipe
+
+(!!!) :: (Ord k, HasCallStack) => Map k v -> k -> v
+(!!!) m x = m Map.! x
+
+currentModules :: GameConfigQualitative -> RecipeName -> PreConfig
+currentModules qgc = runIdentity $ do
+  let byName = Map.fromList (map (\(r, _) -> (recipeName r, r)) recipes)
+  return $ \recipeName ->
+    let recipe = byName !!! recipeName in
+    case recipeName of
+      ProductRecipe product ->
+        let enhancements = collectEnhancements $ currentEnhancements product in
+        let
+          venue =
+            fromMaybe
+              (currentDefaultVenue (recipeVenueKind recipe))
+              (cumulativeEnhancementVenue enhancements)
+        in
+        (venue, cumulativeEnhancementModules enhancements)
+      LiquefactionRecipe -> trivial recipe
+      AdvancedOilProcessing ->
+        ((currentDefaultVenue (recipeVenueKind recipe)), cumulativeEnhancementModules (collectEnhancements [e1, e1, e1]))
+      _ -> trivial recipe
+
+
+current_game_config :: GameConfig
+current_game_config =
+ let liquefaction = Liquefaction_disabled in
+ GameConfig {
+  gc_lab_researches_done = 2,
+  gc_mining_researches_done = 0,
+  gc_liquefaction = liquefaction,
+  gc_recipe_configs = currentModules (GameConfigQualitative liquefaction)
+  }
+
+currentQGC = to_qualitative current_game_config
+
 
 --main = print $ computeTotalCost SciencePack3
 main = report
 --main =
---  print $ solvedRecipes currentConfig Map.! SulfuricAcid
+--  print $ solvedRecipes currentConfig !!! SulfuricAcid
 -- main = mapM_ print $ possibleSavings'''
 {-
 main = do
