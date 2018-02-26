@@ -89,7 +89,6 @@ data Product =
   | Sulfur
   | SulfuricAcid
   | CoalLiquefaction
-  | LabWorkSecond
   | ResearchCoalLiquefaction
   | ResearchLaserTurretDamage5
   | ResearchRocketSilo
@@ -248,7 +247,7 @@ allModules usability =
 --  , EfficiencyModule2
 --  , EfficiencyModule3
   , SpeedModule2
---  , SpeedModule3
+  , SpeedModule3
   ]
   ++ [case usability of
    Unusable ->
@@ -336,11 +335,11 @@ basePollution NoVenue = 0
 baseSpeed _ SolarFacility = 1
 baseSpeed _ Assembly2 = 0.75
 baseSpeed _ Assembly3 = 1.25
-baseSpeed _ Miner = 1 -- factored in into the recipe; productivity upgrade taken into account separately
+baseSpeed _ Miner = 1 -- factored in into the recipe
 baseSpeed _ SmelterElectric = 2
 baseSpeed _ SmelterBurner = 2
 baseSpeed _ Chemical = 1.25
-baseSpeed config Lab = 2.4
+baseSpeed config Lab = gc_lab_speed_multiplier config
 baseSpeed _ Boiler = 1 -- this is factored into the recipe
 baseSpeed _ SteamEngine = 1 -- this is factored into the recipe
 baseSpeed _ Refinery = 1
@@ -443,8 +442,8 @@ data GameConfigQualitative = GameConfigQualitative {
 to_qualitative (GameConfig { gc_liquefaction = liquefaction }) = GameConfigQualitative { qgc_liquefaction = liquefaction }
 
 data GameConfig = GameConfig {
-  gc_lab_researches_done :: Int, -- TODO: propose research
-  gc_mining_researches_done :: Int, -- TODO: propose research
+  gc_lab_researches_done :: Int,
+  gc_mining_researches_done :: Int,
   gc_liquefaction :: Liquefaction_mode,
   gc_recipe_configs :: RecipeName -> PreConfig
   }
@@ -463,7 +462,7 @@ instance NFData RecipeName
 gc_alternatives :: GameConfig -> [(Change, GameConfig)]
 gc_alternatives gc =
   [(Other "Liquefaction Mode" (show mode), gc { gc_liquefaction = mode }) | mode <- allOfThem] ++
-  [(Other "Mining productivity" "+1", gc { gc_lab_researches_done = gc_lab_researches_done gc + 1 }) ] ++
+  [(Other "Lab speed" "+1", gc { gc_lab_researches_done = gc_lab_researches_done gc + 1 }) ] ++
   [(Other "Mining productivity" "+1", gc { gc_mining_researches_done = gc_mining_researches_done gc + 1 }) ] ++
   [(ProductChange recipeName config, gc { gc_recipe_configs = f' })
   | (recipe, _) <- recipes
@@ -998,14 +997,15 @@ venueBuilding venue = case venue of
 capitalCost config =
   mconcat' $ map computeTotalCost (configModuleMaterials config ++ venueBuilding (configVenue config))
 
-partition_market l
+partition_market :: (a -> (Rat, Rat)) -> [a] -> ([a], [a], [a], [a])
+partition_market evaluate l
   =
-  ( p (\(gain, cost) -> gain >= 0 && cost <= 0) (\(gain, cost) -> gain - cost) -- free money
+  ( p (\(gain, cost) -> gain >= 0 && cost <= 0) (\(gain, cost) -> cost) -- free capital
+  , p (\(gain, cost) -> gain >= 0 && cost <= 0) (\(gain, cost) -> (-gain)) -- free resources
   , p (\(gain, cost) -> gain > 0 && cost >= 0) (\(gain, cost) -> cost / gain) -- buy
-  , p (\(gain, cost) -> gain < 0 && cost < 0) (\(gain, cost) -> gain / cost)
+  , p (\(gain, cost) -> gain < 0 && cost < 0) (\(gain, cost) -> gain / cost) -- sell
   ) where
-  p predicate order = sortBy (comparing (order . extractGL)) $ filter (predicate . extractGL) l
-  extractGL (_, gain, cost) = (gain, cost)
+  p predicate order = sortBy (comparing (order . evaluate)) $ filter (predicate . evaluate) l
 
 allRecipeNames qgc = [recipeName recipe | (recipe, check) <- recipes, check qgc]
 
@@ -1047,27 +1047,43 @@ showChange (ProductChange product (venue, modules)) =
     (show product, showVenue venue ++ (concatMap showModule modules))
 showChange (Other a b) = (a, b)  
 
+data TableEntry = TableEntry {
+  te_name :: (String, String),
+  te_efficiency :: Time,
+  te_saving :: RawMaterialPressure,
+  te_cost :: RawMaterialPressure,
+  te_saving_and_cost :: (Rat, Rat)
+  }
 
-possibleSavings' demand (Time totalTime) =
-  -- CR aalekseyev: prevent [installationCost] from being displayed
-  [ (showChange change, saving, cost + installationCost)
-  | (change, gc, Assessment {
+evaluate (Time totalTime)
+  name (Assessment {
               totalRawMaterials,
               totalCapitalSeconds,
-              totalCapital}) <- possibleSavings demand current_game_config
-  , let saving = evaluateTotalCost $ minus totalRawMaterials
-  , let cost = evaluateTotalCost $ add (scale (recip totalTime) totalCapitalSeconds) totalCapital
+              totalCapital}) =
+  let te_saving = minus totalRawMaterials in
+  let te_cost = scale (recip totalTime) totalCapitalSeconds `add` totalCapital in
+  let efficiency = Time (totalTime * (evaluateTotalCost te_cost / evaluateTotalCost te_saving)) in
+  let
+   te_saving_and_cost =
+    (evaluateTotalCost te_saving, evaluateTotalCost te_cost + installationCost )
+  in
+  (TableEntry { te_name = name, te_efficiency = efficiency, te_saving, te_cost, te_saving_and_cost })
+  
+possibleSavings' demand time =
+  [ evaluate time (showChange change) assessment
+  | (change, gc, assessment) <- possibleSavings demand current_game_config
   ]
 
 installationCost = 1000
 
 desiredMaterials =
-  [ (ResearchNuclearPower,  1)
-  , (PiercingRoundMagazine, 10000)
-  , (ProductivityModule2, 200)
-  , (SciencePackProduction, 1000)
-  , (SciencePackHighTech, 500)
-  , (SciencePackMilitary, 500)
+  [ (ResearchRocketSilo,  1)
+  , (PiercingRoundMagazine, 20000)
+  , (ProductivityModule3, 200)
+  , (SciencePack1, 4000)
+  , (SciencePack2, 4000)
+  , (SciencePack3, 4000)
+  , (SciencePackMilitary, 4000)
   ]
 
 lookup0 m k = case Map.lookup k m of
@@ -1083,12 +1099,17 @@ currentEffectiveExecutionTime recipeName =
   unTime (recipeTime recipe)
      / (speedMultiplier (gc_configs current_game_config recipe) * baseSpeed current_game_config (currentRecipeVenue recipe))
 
+showHours (Time t) =
+  show (t / 3600) ++ "h"
+
+format_material_pressure = show . evaluateTotalCost
+
 rCols =
-  [ ("Efficiency", (\(_, gain, cost) -> show (gain / cost)))
-  , ("Name", (\((name, _), _, _) -> name))
-  , ("Mod", (\((_, mod), _, _) -> mod))
-  , ("Gain", (\(_, gain, _) -> show gain))
-  , ("Cost", (\(_, _, cost) -> show cost))
+  [ ("Efficiency", (showHours . te_efficiency))
+  , ("Name", (fst . te_name))
+  , ("Mod", (snd . te_name))
+  , ("Gain", (format_material_pressure . te_saving))
+  , ("Cost", (format_material_pressure . te_cost))
   ]
 
 pad n l = replicate (n - length l) ' ' ++ l
@@ -1097,7 +1118,7 @@ printTable :: [[String]] -> [String]
 printTable =
   map concat . transpose . map (\col -> let maxl = maximum (map length col) in map (pad (maxl + 1)) col) . transpose
 
-printTableG :: Ord a => [a] -> [(String, (a -> String))] -> IO ()
+printTableG :: [a] -> [(String, (a -> String))] -> IO ()
 printTableG l cols =
   let title = map fst cols in
   let showA row = map (($row) . snd) cols in
@@ -1160,18 +1181,19 @@ print_config_details totalTime demand gc =
     print (evaluateTotalCost $ total_capital_oneoff)
 
 report =
-  let futureFactor = 3 in
-  let totalTime = Time (4500 * futureFactor) in
+  let totalTime = Time (5 * 3600) in
   let
    demand =
     Map.fromList desiredMaterials
   in
-  let savings = possibleSavings' (scale futureFactor demand) totalTime in
+  let savings = possibleSavings' demand totalTime in
    do
-    let (free_money, buys, sells) = partition_market savings
+    let (free_capital, free_resources, buys, sells) = partition_market te_saving_and_cost savings
     print_config_details totalTime demand current_game_config
-    print "free money"
-    printRs (take 20 free_money)
+    print "free capital"
+    printRs (take 10 free_capital)
+    print "free resources"
+    printRs (take 10 free_resources)
     print "buys"
     printRs (take 20 buys)
     print "sells"
@@ -1245,34 +1267,36 @@ collectEnhancements = mconcat . map toCumulative where
       cumulativeEnhancementModules = []
     }
 
-currentEnhancements ProcessingUnit = [p, s1, p2, p2, p2]
-currentEnhancements GearWheel = [p, p2, p1, p1, s1]
+currentEnhancements ProcessingUnit = [p, s2, p3, p3, p3]
+currentEnhancements GearWheel = [p, p2, p2, p2, s1]
 --currentEnhancements ElectronicCircuit = [p, p2, p2, p1, s1]
 --currentEnhancements SciencePack3 = [p, p2, p2, p1, s1]
 -- currentEnhancements SciencePackHighTech = [p, p2, p2, p2, p2]
 -- rentEnhancements SciencePackProduction = [p, p2, p2, p2, s1]
 -- currentEnhancements ResearchNuclearPower = [p1, p1]
-currentEnhancements Plastic = [p2, p2, p2]
-currentEnhancements SciencePackMilitary = [p, p2, p2, p1, s1]
+currentEnhancements Plastic = [p2, p2, e1]
+currentEnhancements SciencePackMilitary = [p, p2, p2, p2, s1]
 currentEnhancements SulfuricAcid = [p2, p2, p2]
 currentEnhancements AdvancedCircuit = [p, e1, e1, p1, p1]
 
--- todo: insert these:
 currentEnhancements ResearchNuclearPower = [p2, p2]
+currentEnhancements ResearchRocketSilo = [p2, p2]
 
 currentEnhancements EngineUnit = [e1, e1]
 currentEnhancements SciencePack1 = [e1, e1]
 currentEnhancements SciencePack2 = [e1, e1]
 currentEnhancements LightOil = [e1, e1, e1]
-currentEnhancements CopperCable = [e1, e1]
+currentEnhancements CopperCable = [p, e1, e1, e1, p1]
 currentEnhancements PetroleumGas = [e1, e1, e1]
 currentEnhancements IronOre = [e1, e1, e1]
 currentEnhancements CopperOre = [e1, e1, e1]
+currentEnhancements Coal = [e1, e1, e1]
+currentEnhancements PiercingRoundMagazine = [e1, e1]
 
-currentEnhancements SciencePackHighTech = [p, p3, p3, p3, s2]
-currentEnhancements SciencePackProduction = [p, p2, p2, p2, s1]
-currentEnhancements ElectronicCircuit = [p, p2, p2, p2, s1]
-currentEnhancements SciencePack3 = [p, p2, p2, p2, s1]
+currentEnhancements SciencePackHighTech = [p, p3, p3, p3, p3]
+currentEnhancements SciencePackProduction = [p, p3, p3, p3, s2]
+currentEnhancements ElectronicCircuit = [p, p3, p3, p3, s2]
+currentEnhancements SciencePack3 = [p, p3, p3, p3, s2]
 
 currentEnhancements _ = []
 
@@ -1308,8 +1332,8 @@ current_game_config :: GameConfig
 current_game_config =
  let liquefaction = Liquefaction_disabled in
  GameConfig {
-  gc_lab_researches_done = 2,
-  gc_mining_researches_done = 0,
+  gc_lab_researches_done = 4,
+  gc_mining_researches_done = 6,
   gc_liquefaction = liquefaction,
   gc_recipe_configs = currentModules (GameConfigQualitative liquefaction)
   }
@@ -1335,5 +1359,3 @@ main = do
   print $ y
   print $ x == y
 -}
-
-
