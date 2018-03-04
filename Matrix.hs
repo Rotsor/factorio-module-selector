@@ -39,8 +39,18 @@ data Matrix a b v = Matrix (Array (a, b) v) deriving (Show, Eq, Ord, Functor, Ge
 instance (NFData a, NFData b, NFData v) => NFData (Matrix a b v)
 type Vector a v = Matrix a () v
 
-
 type Ix' a = (Ix a, Bounded a, Enum a)
+
+instance (Ix' a, Ix' b) => Enum (a, b) where
+  fromEnum (x, (y :: b)) = fromEnum x * Array.rangeSize (fullRange :: (b, b)) + fromEnum y
+  toEnum i =
+    let (d, m) = i `divMod` (Array.rangeSize (fullRange :: (b, b))) in
+      (toEnum d, (toEnum m :: b))
+
+instance (Linear v, Ix' a, Ix' b) => Linear (Matrix a b v) where
+  zero = Matrix (f_array (\(_a, _b) -> zero))
+  add = matrixZipWith add
+  minus = fmap minus
 
 fullRange :: Bounded a => (a, a)
 fullRange = (minBound, maxBound)
